@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "id": "release-demo",
+  "name": "Release demo",
+  "description": "The user-guide example: research a topic, then draft the report.",
+  "entry": "start",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "input",
+      "params": [
+        {
+          "name": "topic",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "research",
+      "kind": "agent",
+      "agent": "researcher",
+      "task": "研究主题：{{input.topic}}，输出要点清单。"
+    },
+    {
+      "id": "draft",
+      "kind": "agent",
+      "agent": "writer",
+      "task": "根据下面的研究结果起草报告：\n{{edges.research-to-draft}}"
+    },
+    {
+      "id": "done",
+      "kind": "output",
+      "value": "{{nodes.draft}}"
+    }
+  ],
+  "edges": [
+    {
+      "id": "start-to-research",
+      "from": "start",
+      "to": "research",
+      "kind": "flow",
+      "format": "text"
+    },
+    {
+      "id": "research-to-draft",
+      "from": "research",
+      "to": "draft",
+      "kind": "flow",
+      "format": "md"
+    },
+    {
+      "id": "draft-to-done",
+      "from": "draft",
+      "to": "done",
+      "kind": "flow",
+      "format": "md"
+    }
+  ],
+  "outputs": {
+    "report": "{{nodes.draft}}"
+  }
+}

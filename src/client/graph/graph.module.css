@@ -1,0 +1,110 @@
+/*
+ * Run-board styling. Every color reads a dsw alias token so the board adapts
+ * to the host theme; no literal color belongs here.
+ */
+
+.graph {
+  display: block;
+}
+
+/* Loop body rectangle: a dashed frame around the body nodes. */
+.loopBox {
+  fill: transparent;
+  stroke: var(--dsw-alias-border-l2);
+  stroke-dasharray: 5 4;
+}
+
+.edge {
+  fill: none;
+  stroke: var(--dsw-alias-border-l3);
+  stroke-width: 1.5;
+}
+
+.edgeTransferred {
+  stroke: var(--dsw-alias-state-success-primary);
+}
+
+.edgeTruncated {
+  stroke: var(--dsw-alias-state-warn-primary);
+  stroke-dasharray: 6 3;
+}
+
+.edgeArrow {
+  fill: context-stroke;
+}
+
+.edgeLabel {
+  fill: var(--dsw-alias-label-secondary);
+  font-family: var(--dsw-alias-font-mono);
+  font-size: 10px;
+}
+
+.node {
+  fill: var(--dsw-alias-bg-l2);
+  stroke: var(--dsw-alias-border-l2);
+  stroke-width: 1;
+}
+
+.nodeIdle {
+  fill: var(--dsw-alias-bg-l2);
+  stroke: var(--dsw-alias-border-l2);
+}
+
+.nodeStatusRunning {
+  stroke: var(--dsw-alias-brand-primary);
+  stroke-width: 2;
+}
+
+.nodeStatusCompleted {
+  stroke: var(--dsw-alias-state-success-primary);
+  stroke-width: 1.5;
+}
+
+.nodeStatusFailed {
+  stroke: var(--dsw-alias-state-error-primary);
+  stroke-width: 1.5;
+}
+
+.nodeStatusSkipped {
+  stroke: var(--dsw-alias-border-l3);
+  stroke-dasharray: 3 3;
+}
+
+.nodeStatusCancelled {
+  stroke: var(--dsw-alias-label-dimmed);
+  stroke-dasharray: 2 4;
+}
+
+.nodeSelected {
+  stroke-width: 2.5;
+}
+
+.nodeLabel {
+  fill: var(--dsw-alias-label-primary);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+.loop {
+  stroke-dasharray: 5 3;
+}
+
+.note {
+  fill: transparent;
+  stroke: var(--dsw-alias-border-l3);
+  stroke-dasharray: 3 3;
+}
+
+.outputInner {
+  fill: none;
+  stroke: var(--dsw-alias-border-l3);
+}
+
+.subMarker {
+  stroke: var(--dsw-alias-border-l3);
+  stroke-width: 1.5;
+}
+
+.nodeClickable {
+  cursor: pointer;
+}

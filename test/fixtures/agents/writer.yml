@@ -1,0 +1,4 @@
+id: writer
+name: Writer
+description: 根据研究结果起草报告。
+prompt: You are a writer. Draft a short report from the research provided in the input.

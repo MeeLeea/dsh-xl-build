@@ -1,0 +1,12 @@
+# Bundle patch applied over the selected DSH profile when this package is
+# installed via `dsh plugin --profile <name> add` (or listed in
+# `dsh.profile.bundles`). The row id is deployment-local; the package name
+# must match package.json.
+#
+# The host half (lib/index.js) loads through this insert row. The Web client
+# half (lib/client.js) is discovered separately from the `dsh.client`
+# declaration in package.json.
+
+- insert:
+    - id: xl-build
+      name: 'dsh-xl-build'

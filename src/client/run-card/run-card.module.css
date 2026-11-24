@@ -1,0 +1,141 @@
+.root {
+  width: 100%;
+  min-width: 0;
+}
+
+.runHeader {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: var(--dsw-radius-md);
+  background: var(--dsw-alias-bg-module-platform);
+}
+
+.runHeader:focus-visible {
+  outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: -2px;
+}
+
+.runLeading {
+  display: inline-flex;
+  flex: none;
+  width: calc(16px + var(--dsh-content-font-delta, 0px));
+  height: calc(16px + var(--dsh-content-font-delta, 0px));
+  align-items: center;
+  justify-content: center;
+  color: inherit;
+}
+
+.runTitle {
+  overflow: hidden;
+  flex: none;
+  max-width: 42%;
+  color: inherit;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-weight: 510;
+  line-height: calc(24px + var(--dsh-content-font-delta, 0px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.runSummary {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  color: inherit;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(18px + var(--dsh-content-font-delta-secondary, 0px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusTail {
+  display: inline-flex;
+  flex: none;
+  height: 20px;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 510;
+  line-height: 16px;
+  color: inherit;
+  white-space: nowrap;
+}
+
+.separator {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--dsw-alias-label-tertiary);
+}
+
+.members {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px 0 0 16px;
+}
+
+.memberRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 24px;
+}
+
+.memberDot {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+}
+
+.memberLabel {
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+  color: var(--dsw-alias-label-primary);
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memberMeta {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+  font-family: var(--dsw-alias-font-mono);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.memberStatus {
+  flex: none;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.memoryLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 24px;
+  margin-top: 4px;
+  padding: 0 0 0 16px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 11px;
+  line-height: 16px;
+}

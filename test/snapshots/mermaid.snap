@@ -1,0 +1,59 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`toMermaid > colors the plan example with a run view without changing structure 1`] = `
+"flowchart TD
+  in1(["input"])
+  a-research["researcher"]
+  a-writer["writer"]
+  p-lint{{"shell: lint"}}
+  out1[("output")]
+  in1 -->|text| a-research
+  a-research -->|md| a-writer
+  a-writer -->|json| p-lint
+  p-lint -->|text| out1
+  classDef ok fill:#e6f4ea,stroke:#137333
+  classDef bad fill:#fce8e6,stroke:#c5221f
+  classDef run fill:#e8f0fe,stroke:#1967d2
+  class a-research ok
+  class p-lint run
+"
+`;
+
+exports[`toMermaid > projects every node kind and every edge kind 1`] = `
+"flowchart TD
+  in1(["input"])
+  a1["reviewer"]
+  p1{{"shell: lint --fix"}}
+  p2{{"ptc: xlsx.read()"}}
+  t1>"write_file"]
+  r1{"needs-fix?"}
+  j1(("quorum 2"))
+  l1[/"≤5 轮"\\]
+  s1[["review-chain"]]
+  %% note: explain the fork
+  out1[("output")]
+  in1 -->|text| r1
+  r1 -- "needs-fix?" --> p1
+  r1 -- "else" --> t1
+  a1 ==>|md| j1
+  p1 ==>|text| j1
+  j1 -->|json| l1
+  p2 -.-> l1
+  l1 -.->|error| s1
+  s1 -->|text| out1
+"
+`;
+
+exports[`toMermaid > projects the plan example without a run view 1`] = `
+"flowchart TD
+  in1(["input"])
+  a-research["researcher"]
+  a-writer["writer"]
+  p-lint{{"shell: lint"}}
+  out1[("output")]
+  in1 -->|text| a-research
+  a-research -->|md| a-writer
+  a-writer -->|json| p-lint
+  p-lint -->|text| out1
+"
+`;

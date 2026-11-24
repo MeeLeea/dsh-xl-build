@@ -1,0 +1,119 @@
+{
+  "name": "dsh-xl-build",
+  "version": "0.1.0-alpha.0",
+  "description": "Declarative sub-agent definitions, workflow topology, and a live run board for DeepSeek Harness.",
+  "type": "module",
+  "private": true,
+  "main": "./lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./types": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/types/index.js"
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/client.js.map",
+    "lib/types",
+    "locale",
+    "py",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "agents",
+    "workflow",
+    "doc"
+  ],
+  "scripts": {
+    "clean": "node tools/clean-build.mjs",
+    "build": "node tools/clean-build.mjs && node --max-old-space-size=8192 tools/build.mjs && node tools/run-tests.mjs && vitest run",
+    "test": "node tools/run-tests.mjs && vitest run",
+    "test:spec": "vitest run"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-input-trigger",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ],
+      "platform": "web"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5-alpha.1",
+    "@deepseek-ai/dsh-agent": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-agent-loop": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-brand": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-commands": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-session": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-session-projection": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-shell": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-subagent": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-util-workspace-path": "^0.2.1-rc.4",
+    "@deepseek-ai/schemastery": "^3.18.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-agent": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-agent-loop": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-agent-loop-testkit": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-api-session-controller": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-brand": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-locale": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-chat": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-conversation": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-input-trigger": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-commands": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-llm-deepseek-api-key": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-session": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-session-projection": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-shell": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-subagent": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-subagent-spawn-in-process": "^0.2.1-rc.4",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.4",
+    "@deepseek-ai/dsh-util-workspace-path": "0.2.1-rc.4",
+    "@deepseek-ai/schemastery": "3.18.5",
+    "@testing-library/react": "^16.3.3",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.20.1",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.0",
+    "js-yaml": "^4.3.2",
+    "jsdom": "^30.1.3",
+    "lightningcss": "^1.33.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "tsdown": "0.22.2",
+    "typescript": "^6.0.3",
+    "vitest": "^5.1.0",
+    "zod": "4.4.3"
+  }
+}

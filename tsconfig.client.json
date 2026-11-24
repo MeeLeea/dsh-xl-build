@@ -1,0 +1,11 @@
+{
+  // Client face leaf: compiles src/client/ to lib/types/client/. The browser
+  // bundle (lib/client.js) consumes lib/types/client/index.js.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": "lib/types/.client.tsbuildinfo"
+  },
+  "include": ["src/client/**/*.ts", "src/client/**/*.tsx", "src/css-modules.d.ts"]
+}
