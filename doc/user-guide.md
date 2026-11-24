@@ -38,7 +38,7 @@ dsh plugin --profile web add D:\work\deepseek-harness\scratch-plugin\dsh-xl-buil
 ```text
 /workflow list                            # 列出已保存工作流（含解析失败文件及其错误）
 /workflow validate <file>                 # 校验一个 .json/.yml/.py 定义
-/workflow run <id> [--input k=v ...] [--self <nodeId>]
+/workflow run <id> ["<single input>"] [--input k=v ...] [--self <nodeId>]   # 位置参数填唯一未填的声明输入
 /workflow export <id> --mermaid           # 导出 plan.md §6.6 的 mermaid 文本
 ```
 

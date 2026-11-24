@@ -19,12 +19,19 @@ import type { WorkflowRunRuntime } from '../workflow/run.ts'
 export const WORKFLOW_COMMAND_NAME = 'workflow'
 
 /** Usage text returned for an unknown subcommand, a missing argument, or a bad flag. */
-export const WORKFLOW_USAGE = 'usage: /workflow run <id> [--input k=v]... [--self <nodeId>] '
+export const WORKFLOW_USAGE = 'usage: /workflow run <id> ["<single input>"] [--input k=v]... [--self <nodeId>] '
   + '| /workflow list | /workflow validate <file> | /workflow export <id> --mermaid'
 
 /** One parsed `/workflow` invocation. */
 export type WorkflowCommand =
-  | { readonly kind: 'run', readonly id: string, readonly inputs: Record<string, string>, readonly selfNodeId?: string }
+  | {
+      readonly kind: 'run'
+      readonly id: string
+      readonly inputs: Record<string, string>
+      readonly selfNodeId?: string
+      /** Positional value filling the single unfilled declared input; resolved against the document when the run starts. */
+      readonly positionalInput?: string
+    }
   | { readonly kind: 'list' }
   | { readonly kind: 'validate', readonly file: string }
   | { readonly kind: 'export', readonly id: string, readonly format: 'mermaid' }
@@ -81,8 +88,10 @@ function parseRun(tokens: readonly string[]): WorkflowCommand {
   if (id === undefined) return usage('run requires a workflow id')
   const inputs: Record<string, string> = {}
   let selfNodeId: string | undefined
+  let positionalInput: string | undefined
   for (let index = 0; index < flags.length; index += 1) {
     const flag = flags[index]
+    if (flag === undefined) break
     if (flag === '--self') {
       const value = flags[index + 1]
       if (value === undefined) return usage('--self requires a node id')
@@ -99,9 +108,17 @@ function parseRun(tokens: readonly string[]): WorkflowCommand {
       index += 1
       continue
     }
-    return usage(`unknown option "${flag}" for run`)
+    if (flag.startsWith('--')) return usage(`unknown option "${flag}" for run`)
+    if (positionalInput !== undefined) return usage(`unexpected extra argument "${flag}" for run`)
+    positionalInput = flag
   }
-  return { kind: 'run', id, inputs, ...selfNodeId !== undefined ? { selfNodeId } : {} }
+  return {
+    kind: 'run',
+    id,
+    inputs,
+    ...(selfNodeId !== undefined ? { selfNodeId } : {}),
+    ...(positionalInput !== undefined ? { positionalInput } : {}),
+  }
 }
 
 /** Parse the `export` subcommand. */
@@ -136,6 +153,33 @@ export function parseCommand(rawInput: string): WorkflowCommand {
     default:
       return usage(`unknown subcommand "${subcommand}"`)
   }
+}
+
+/** Outcome of folding the positional input into the declared run inputs. */
+type PositionalResolution = { readonly inputs: Record<string, string> } | { readonly error: string }
+
+/**
+ * Fold the positional input into the declared run inputs: it fills the single
+ * declared input not already provided by `--input`. Zero or several candidates
+ * is a readable error, never a silent guess.
+ */
+function withPositionalInput(
+  document: WorkflowDocument,
+  provided: Record<string, string>,
+  positional: string,
+): PositionalResolution {
+  const candidates = document.nodes
+    .flatMap((node) => node.kind === 'input' ? node.params : [])
+    .map((param) => param.name)
+    .filter((name) => !(name in provided))
+  const [single] = candidates
+  if (single === undefined) {
+    return { error: `positional input given, but "${document.id}" declares no unfilled run input; drop it or use --input k=v` }
+  }
+  if (candidates.length > 1) {
+    return { error: `positional input is ambiguous; "${document.id}" declares several run inputs (${candidates.join(', ')}); use --input k=v` }
+  }
+  return { inputs: { ...provided, [single]: positional } }
 }
 
 /** Options the workflow command needs from plugin configuration. */
@@ -223,9 +267,13 @@ export async function runWorkflowCommand(
           text: issues.map((issue) => `${issue.rule}: ${issue.message}`).join('\n'),
         }
       }
+      const resolved = command.positionalInput !== undefined
+        ? withPositionalInput(document, command.inputs, command.positionalInput)
+        : { inputs: command.inputs }
+      if ('error' in resolved) return { kind: 'error', text: resolved.error }
       const { runId } = await options.runtime.startRun({
         document,
-        inputs: command.inputs,
+        inputs: resolved.inputs,
         ...(command.selfNodeId !== undefined ? { selfNodeId: command.selfNodeId } : {}),
       }, initiator)
       return { kind: 'success', text: `started run ${runId} for ${command.id}` }
@@ -249,7 +297,7 @@ export function createWorkflowCommand(options: WorkflowCommandOptions): CommandD
   return {
     name: WORKFLOW_COMMAND_NAME,
     description: 'List, validate, run, or export saved xl-build workflows.',
-    input: { hint: 'run <id> [--input k=v] [--self <nodeId>] | list | validate <file> | export <id> --mermaid' },
+    input: { hint: 'run <id> ["<single input>"] [--input k=v] [--self <nodeId>] | list | validate <file> | export <id> --mermaid' },
     handler: async (invocation) => runWorkflowCommand(invocation.rawInput, options, invocation.agent),
   }
 }

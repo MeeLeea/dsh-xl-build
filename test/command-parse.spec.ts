@@ -40,6 +40,29 @@ const GOOD_YAML = [
   '    kind: flow',
 ].join('\n')
 
+const TWO_PARAM_YAML = [
+  'schemaVersion: 1',
+  'id: two',
+  'name: Two inputs',
+  'entry: start',
+  'nodes:',
+  '  - kind: input',
+  '    id: start',
+  '    params:',
+  '      - name: version',
+  '        required: true',
+  '      - name: channel',
+  '        required: true',
+  '  - kind: output',
+  '    id: done',
+  '    value: "{{input.version}} {{input.channel}}"',
+  'edges:',
+  '  - id: e1',
+  '    from: start',
+  '    to: done',
+  '    kind: flow',
+].join('\n')
+
 describe('parseCommand', () => {
   it('parses list and validate', () => {
     expect(parseCommand('list')).toEqual({ kind: 'list' })
@@ -68,6 +91,23 @@ describe('parseCommand', () => {
     })
   })
 
+  it('parses a positional input and keeps flag order free', () => {
+    expect(parseCommand('run release "2.0"')).toEqual({ kind: 'run', id: 'release', inputs: {}, positionalInput: '2.0' })
+    expect(parseCommand('run release --self finish "2.0"')).toEqual({
+      kind: 'run',
+      id: 'release',
+      inputs: {},
+      selfNodeId: 'finish',
+      positionalInput: '2.0',
+    })
+    expect(parseCommand("run release '2.0' --input k=v")).toEqual({
+      kind: 'run',
+      id: 'release',
+      inputs: { k: 'v' },
+      positionalInput: '2.0',
+    })
+  })
+
   it('parses export with only the mermaid format', () => {
     expect(parseCommand('export release --mermaid')).toEqual({ kind: 'export', id: 'release', format: 'mermaid' })
   })
@@ -78,6 +118,7 @@ describe('parseCommand', () => {
     ['run without id', 'run'],
     ['unknown run option', 'run r --bogus x'],
     ['input without k=v', 'run r --input novalue'],
+    ['two positional inputs', 'run r a b'],
     ['self without node', 'run r --self'],
     ['list with arguments', 'list now'],
     ['validate without file', 'validate'],
@@ -236,6 +277,36 @@ describe('runWorkflowCommand', () => {
     const initiator = { id: 'initiator-1', followup: () => {} } as Agent
     const missing = await runWorkflowCommand('run ghost', { workflowsDir: dir, runtime }, initiator)
     expect(missing).toMatchObject({ kind: 'error', text: expect.stringContaining('workflow "ghost" is not saved') })
+  })
+
+  it('fills the single declared input from a positional goal', async () => {
+    const dir = workflowsDir()
+    writeFileSync(join(dir, 'release.yml'), GOOD_YAML)
+    const calls: { inputs: Record<string, string> }[] = []
+    const runtime: WorkflowRunRuntime = {
+      startRun: async ({ inputs }) => {
+        calls.push({ inputs })
+        return { runId: 'run-1' }
+      },
+    }
+    const initiator = { id: 'initiator-1', followup: () => {} } as Agent
+    const result = await runWorkflowCommand('run release "2.0"', { workflowsDir: dir, runtime }, initiator)
+    expect(result).toEqual({ kind: 'success', text: 'started run run-1 for release' })
+    expect(calls[0]?.inputs).toEqual({ version: '2.0' })
+  })
+
+  it('refuses a positional goal when the inputs are exhausted or ambiguous', async () => {
+    const dir = workflowsDir()
+    writeFileSync(join(dir, 'release.yml'), GOOD_YAML)
+    writeFileSync(join(dir, 'two.yml'), TWO_PARAM_YAML)
+    const runtime: WorkflowRunRuntime = { startRun: async () => ({ runId: 'unused' }) }
+    const initiator = { id: 'initiator-1', followup: () => {} } as Agent
+
+    const exhausted = await runWorkflowCommand('run release "2.0" --input version=3', { workflowsDir: dir, runtime }, initiator)
+    expect(exhausted).toMatchObject({ kind: 'error', text: expect.stringContaining('declares no unfilled run input') })
+
+    const ambiguous = await runWorkflowCommand('run two "x"', { workflowsDir: dir, runtime }, initiator)
+    expect(ambiguous).toMatchObject({ kind: 'error', text: expect.stringContaining('ambiguous') })
   })
 
   it('exports a saved workflow as mermaid', async () => {

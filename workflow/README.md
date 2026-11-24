@@ -2,14 +2,14 @@
 
 `dsh-xl-build` 的图式编排：拓扑是磁盘上的声明式文档，`/workflow` 命令负责 `list` / `validate` / `run` / `export`，引擎按节点执行，每次 Run 的 journal、产物和长期记忆各自落盘。
 
-**目录名注意**：运行时扫描的是 `workflowsDir`，默认 `workflows/`（复数，相对 `dsh` 进程工作目录）。本目录（插件源码里的 `workflow/`）按需求命名，用于存放这份参考文档；`.md` 不在扫描范围内，所以把这里的文件当工作流目录用（`workflowsDir: workflow`）也不会误读本文。
+**目录名注意**：运行时扫描的是 `workflowsDir`，默认 `workflows/`（复数，相对 `dsh` 进程工作目录）。本目录（插件源码里的 `workflow/`）存放这份参考文档和示例工作流 `xl-build-pipeline`（`.yml` / `.json` / `.py` 三种格式，见「示例工作流的调用命令」）；`.md` 不在扫描范围内，所以把这里的文件当工作流目录用（`workflowsDir: workflow`）也不会误读本文。
 
 ## 创建流程
 
 1. 建目录：`<dsh 启动目录>/workflows/`。扫描器不会替你创建它，目录不存在时 `/workflow list` 只回答 `No workflows are saved.`
 2. 写一个文档文件，扩展名 `.json` / `.yml` / `.yaml`，放在该目录第一层。填齐必填项：`schemaVersion`、`id`、`name`、`entry`、`nodes`、`edges`。
 3. 校验：`/workflow validate workflows/<file>`。通过时回答 `Valid: <id> (n nodes, m edges)`；失败时逐条列出 `V<n>: <原因>`。
-4. 试跑：`/workflow run <id> --input k=v`。命令立刻回答 `started run <runId> for <id>`，Run 在独立根会话里执行，结束时向发起会话发 follow-up。
+4. 试跑：`/workflow run <id> "<唯一输入>"`（多输入文档改用 `--input k=v`）。命令立刻回答 `started run <runId> for <id>`，Run 在独立根会话里执行，结束时向发起会话发 follow-up。
 5. 复核：`/workflow list` 看清单、`/workflow export <id> --mermaid` 核对拓扑，侧栏看板看节点状态与产物。
 
 ## 目录与文件约定
@@ -280,3 +280,21 @@ schema 接受、但引擎当前不消费或直接失败的字段/路径，写工
 ```
 
 相关配置项：`workflowsDir`、`runsDir`、`maxConcurrentNodes`、`maxSteps`、`runTimeoutMs`、`scriptTimeoutMs`、`allowedScriptRuntimes`、`retryableToolErrors`、`persistRuns`、`recentRuns`、`wirePreviewBytes`、`memoryEnabled`、`memoryDir`、`memoryMaxBytes`、`memoryCurator`、`runRootProvider`、`runRootModel`。
+
+## 示例工作流的调用命令
+
+本目录随附示例工作流 `xl-build-pipeline`：`input(goal)` → `manager` 出执行计划 → `worker` 与 `scripting-engineer` 并行实现 → `join` 汇总 → `reviewer` 只读复核 → `output`。`xl-build-pipeline.yml` 与 `xl-build-pipeline.json` 内容逐字段一致，`xl-build-pipeline.py` 是 Python DSL 源码（目录扫描不识别 `.py`，须先编译）。四个 `agent` 引用（`manager` / `worker` / `reviewer` / `scripting-engineer`）都是包内置定义，无需额外配置。
+
+运行前提：`workflowsDir` 指到本目录（见「目录与配置覆盖」），`validate` 的文件路径按 `dsh` 进程工作目录解析。
+
+| 命令 | 作用 |
+| --- | --- |
+| `/workflow validate workflow/xl-build-pipeline.yml` | 校验一个文档文件；通过回答 `Valid: xl-build-pipeline (7 nodes, 7 edges)`，失败逐条列出 `V<n>: <原因>`。`.json` 产物同理 |
+| `/workflow run xl-build-pipeline "<目标>"` | 按文档 `id` 运行；位置参数填进文档里唯一未填的声明输入（这里等价 `--input goal=<目标>`），多输入文档用 `--input k=v`。命令立即返回 `started run <runId> for <id>`，结束时向发起会话发 follow-up |
+| `/workflow run xl-build-pipeline "<目标>" --self plan` | 加 `--self <nodeId>` 后该节点挂在发起会话执行，用户可继续对话 |
+| `/workflow list` | 列出 `workflowsDir` 下全部文档（`- <id>: <name> (n nodes, m edges)`）；坏文件显示 `invalid — <错误>`，不影响其它文件 |
+| `/workflow export xl-build-pipeline --mermaid` | 输出该工作流的 mermaid 拓扑 |
+| `python py/xl_build build workflow/xl-build-pipeline.py -o workflow/xl-build-pipeline.py.json` | 把 `.py` DSL 源码编译成插件可读的 JSON；改过源码后重跑，再对产物执行 `validate` |
+| `python -m xl_build build <script>.py -o <out>.json` | 上一行的等价形式，需先把 `py/` 加入 `PYTHONPATH` |
+
+`yml` 与 `json` 同 id 共存时，`run` 取扫描顺序里的第一个有效文档；两者内容一致，行为无差别。
