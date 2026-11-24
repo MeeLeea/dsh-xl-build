@@ -1,0 +1,66 @@
+schemaVersion: 1
+id: xl-build-pipeline
+name: XL build pipeline
+description: manager 拆解目标为执行计划，worker 与 scripting-engineer 并行实现，reviewer 只读复核后汇总输出。
+entry: start
+nodes:
+  - id: start
+    kind: input
+    params:
+      - { name: goal, required: true }
+  - id: plan
+    kind: agent
+    agent: manager
+    task: |
+      这是 workflow 引擎的一次节点调用：只产出执行计划，不要调用 xl_agent_run 派发子任务，也不要修改任何文件。
+      目标：{{input.goal}}
+      输出一份有序子任务清单：每项写明负责角色（worker / scripting-engineer）、目标文件、范围边界、验收方式，并标出哪些项可以并行。
+  - id: implement
+    kind: agent
+    agent: worker
+    task: |
+      完成计划中指派给 worker 的全部子任务：保持最小正确变更，跑一个聚焦检查证明结果，报告改动文件与实际检查输出。
+      计划：
+      {{nodes.plan}}
+  - id: automate
+    kind: agent
+    agent: scripting-engineer
+    task: |
+      为计划中适合自动化的部分写一个非交互脚本并实际运行验证：不引入新依赖，报告脚本路径、调用方式与实际输出。
+      计划：
+      {{nodes.plan}}
+  - id: merge
+    kind: join
+    strategy: all
+  - id: review
+    kind: agent
+    agent: reviewer
+    task: |
+      只读复核以下两路产物对应的仓库变更：正确性、边界与资源清理、与计划的一致性。按严重度列出缺陷（file:line + 具体修复）；没有缺陷就明确说明，不要编造 nitpick。
+      计划：
+      {{nodes.plan}}
+      实现报告：
+      {{nodes.implement}}
+      自动化脚本报告：
+      {{nodes.automate}}
+  - id: done
+    kind: output
+    value: |
+      ## 计划
+      {{nodes.plan}}
+      ## 实现报告
+      {{nodes.implement}}
+      ## 自动化脚本
+      {{nodes.automate}}
+      ## 评审结论
+      {{nodes.review}}
+edges:
+  - { id: start-to-plan, from: start, to: plan, kind: flow }
+  - { id: plan-to-implement, from: plan, to: implement, kind: fan-out }
+  - { id: plan-to-automate, from: plan, to: automate, kind: fan-out }
+  - { id: implement-to-merge, from: implement, to: merge, kind: fan-in }
+  - { id: automate-to-merge, from: automate, to: merge, kind: fan-in }
+  - { id: merge-to-review, from: merge, to: review, kind: flow }
+  - { id: review-to-done, from: review, to: done, kind: flow }
+outputs:
+  report: "{{nodes.done}}"
