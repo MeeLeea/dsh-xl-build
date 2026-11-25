@@ -267,6 +267,17 @@ describe('runWorkflowCommand', () => {
     expect((calls[0]?.initiator as { id: string }).id).toBe('initiator-1')
   })
 
+  it('returns an error result when the runtime rejects instead of throwing', async () => {
+    const dir = workflowsDir()
+    writeFileSync(join(dir, 'release.yml'), GOOD_YAML)
+    const runtime: WorkflowRunRuntime = {
+      startRun: async () => { throw new Error('engine wiring failed') },
+    }
+    const initiator = { id: 'initiator-1', followup: () => {} } as Agent
+    const result = await runWorkflowCommand('run release', { workflowsDir: dir, runtime }, initiator)
+    expect(result).toMatchObject({ kind: 'error', text: expect.stringContaining('engine wiring failed') })
+  })
+
   it('still refuses run without a runtime and unknown ids with one', async () => {
     const dir = workflowsDir()
     const run = await runWorkflowCommand('run release', { workflowsDir: dir })

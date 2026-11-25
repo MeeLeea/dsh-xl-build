@@ -212,7 +212,7 @@ export const AgentSpecSchema = z.object({
 
 **AgentSpec 不裁剪子智能体的工具与 persona**：现行 `SubagentStartRequest` 没有工具过滤字段（persona/工具裁剪在 harness 里已迁移到 preset 组合），组合裁剪的唯一入口是 `agentPreset`（独立 preset id，仅 `spawn` 后端支持，fork/外部后端会拒绝该选项；省略时子激活加入父的当前 preset generation）。要「这个 agent 只有某几个工具」，就为它组合一个 preset 并在 yml 里引用其 id。
 
-`readOnly` 不新造权限模型，也不假装能裁剪工具集：`readOnly: true` 只在发给子智能体的 `prompt` 首块前缀一段只读声明（父侧碰不到子激活的 system prompt，这是唯一的注入通道）；真正的权限仍由 DSH 的 approval / permissionPresets 决定——子激活的权限范围在启动时由 delegation 固定，本插件不叠加第二套。
+`readOnly` 不新造权限模型，也不假装能裁剪工具集：`readOnly: true` 只在发给子智能体的 `prompt` 首块前缀一段只读声明（父侧碰不到子激活的 system prompt，这是唯一的注入通道）；真正的权限仍由 DSH 的 approval / permissionPresets 决定——子激活的权限范围在启动时由 delegation 固定，本插件不叠加第二套。`prompt` 以角色块随任务投递：`buildPromptBlocks` 首块 = 只读声明（启用时）+ 角色提示词，次块 = task——仍是用户消息而非 system prompt，身份级 system prompt 只有 agent preset 路径承载（见 `doc/delegation-paths.md` §2）。
 
 ### 5.3 注册与生命周期
 
@@ -257,11 +257,11 @@ export const Config = Schema.object({
 注册两个工具：`xl_agent_list()` 返回可用 AgentSpec 的 `id/name/description`（不含 prompt，避免上下文泄漏）；`xl_agent_run({ agent, task, cwd? })` 内部：
 
 ```ts
-// promptBlock = readOnly 声明前缀（§5.2）+ task；agentPreset 仅在 yml 设置时携带；delivery 由调用方传入
+// prompt 两块：首块 = 只读声明前缀（§5.2，启用时）+ 角色提示词，次块 = task；agentPreset 仅在 yml 设置时携带；delivery 由调用方传入
 const started = await ctx.subagents.startActivation({
   provider: spec.provider,
   label: spec.name,
-  request: { prompt: [{ type: 'text', text: promptBlock }], parent: agent, cwd, agentPreset, agentOptions, outputSchema },
+  request: { prompt: [roleBlock, taskBlock], parent: agent, cwd, agentPreset, agentOptions, outputSchema },
   signal,
   delivery,
 })
@@ -526,7 +526,7 @@ V8 与 V15 必须一起读：V8 保证「把回边摘掉后是个 DAG」，V15 �
 执行循环：
 
 1. `compile(doc)` 产出 `Plan`：节点表、入边表、拓扑层、每个 loop 的 body 节点集合。
-2. 执行状态按**帧**组织，不是 Run 级全局：`frame = { id, loopId?, iteration }`。顶层 Run 是根帧；每个 loop 的每一轮迭代开一个新帧，帧内 `states`（`type NodeStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'skipped'`）与 `edgeResults` 独立持有，帧结束时只把 `carry` 指定的边载荷交给下一帧。这一条是循环语义能否成立的分界：没有帧，join 会读到上一轮遗留的入边结果。
+2. 执行状态按**帧**组织，不是 Run 级全局：`frame = { id, loopId?, iteration }`。顶层 Run 是根帧；每个 loop 的每一轮迭代开一个新帧，帧内 `states`（`type NodeStatus = 'running' | 'completed' | 'failed' | 'skipped' | 'cancelled'`）与 `edgePayloads` 独立持有，帧结束时只把 `carry` 指定的边载荷交给下一帧。这一条是循环语义能否成立的分界：没有帧，join 会读到上一轮遗留的入边结果。
 3. 帧内选出「所有入边已完成且满足触发条件」的 `pending` 节点；`fan-out` 产生的分支按 `maxConcurrentNodes` 并行；`join` 节点在策略满足（`all` / `any` / `quorum(n)`）后触发。join 判定只看本帧的入边。
 4. 节点执行：解析入边载荷 → 渲染模板 → 按 kind 调用对应实现 → 立刻写 `node-end` → 按出边 `format`/`select`/`maxBytes` 生成载荷 → 写 `edge-transfer`。
 5. 失败：按错误分类决定是否重试（模型/传输可重试，工具错误按 `Config.retryableToolErrors` 白名单重试，代码 bug 不重试），写 `node-error`；重试耗尽则进入 `failed`，`error` 边若存在则沿它继续，否则终止 Run。

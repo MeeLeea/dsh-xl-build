@@ -28,14 +28,14 @@ prompt: You review diffs and report concrete defects.
 | `id` | string | 必填 | 稳定标识，同时是 `xl_agent_run` 的 `agent` 参数、`@` 提及目标、workflow `agent` 节点的引用值。正则 `^[a-z][a-z0-9-]{1,40}$`：小写字母开头，之后只能是小写字母、数字、连字符，总长 2–41。同一目录内不可重复。 |
 | `name` | string | 必填 | 显示名，出现在 `@` 候选菜单和工具列表里。`@` 提及按 `id` 或 `name` 解析；多个 agent 同名时按 `name` 提及会报 `ambiguous-label`。 |
 | `description` | string | 必填 | 一行能力摘要，模型通过 `xl_agent_list` 看到的就是它，借此挑选执行者。**不要**把 prompt 内容塞进来。 |
-| `prompt` | string | 必填 | 子激活的系统提示词。`readOnly` 生效时实际内容为只读指令 + 空行 + 本字段。 |
+| `prompt` | string | 必填 | 角色提示词。随任务前置投递为子激活用户消息的首块（任务为第二块）；注册为 preset 后（见下节）以 persona `complete` 成为子会话的完整 system prompt。 |
 | `provider` | string | 默认 `spawn` | subagent 后端注册名，必须是当前 profile 里已注册的后端（标准装配为 `spawn` / `fork`）。 |
 | `agentPreset` | string | 默认无 | 授予子智能体工具集与人格的 preset id，只有声明了该启动能力的后端（进程内 `spawn`/`fork`）接受。web profile 可用 `standard`（默认）、`minimal`、`ptc`、`cordis`。注意 `read-only` 是权限 preset 而非 agent preset，填在这里无效。 |
 | `model` | string | 默认无 | 子智能体使用的模型 id；省略则用子循环的默认模型。 |
 | `reasoningEffort` | `low` \| `medium` \| `high` | 默认无 | 转发给子模型选择的推理强度。 |
 | `maxTokens` | 正整数 | 默认无 | 输出 token 上限。 |
 | `cwd` | string | 默认无 | 子激活的工作目录。`xl_agent_run` 调用时传的 `cwd` 优先级更高；两者都无则用父会话目录。 |
-| `readOnly` | boolean | 默认 `true` | 为 `true` 时给子任务前缀一句只读指令（原文 `Read-only mode: report findings and do not modify files, and do not run commands that change state.`）。**要让 agent 能写文件或执行改状态命令，必须显式写 `readOnly: false`。** |
+| `readOnly` | boolean | 默认 `true` | 为 `true` 时在发给子智能体的首块（角色提示词）块首再拼一句只读指令（原文 `Read-only mode: report findings and do not modify files, and do not run commands that change state.`）。**要让 agent 能写文件或执行改状态命令，必须显式写 `readOnly: false`。** |
 | `timeoutMs` | 正整数 | 默认 `600000` | 单次激活的墙钟预算，由插件自己计时，到点 dispose 该激活，其结果按 aborted 结算；不依赖后端超时。 |
 | `outputSchema` | object（JSON Schema） | 默认无 | 子结果必须满足的结构。启动前先做一次可读的 schema 自检，后端启动时再校验一次。仅支持该能力的后端可用。 |
 
@@ -68,6 +68,27 @@ timeoutMs: 900000
 - **用户点名**：输入框写 `@<id>` 或 `@<name>`（写成 `<xl-agent id="..." />` 也认），本步会记录解析结果并注入一条指令，要求第一步就调 `xl_agent_run` 执行该任务。
 - **workflow 节点**：`{ "kind": "agent", "agent": "<id>", "task": "..." }` 按 `id` 引用，与工具、`@` 走同一条执行路径。`/workflow validate` 只校验图结构，不检查 agent 是否存在；未知 id 在 run 时才失败，报 `unknown agent "<id>"`。
 - **长期记忆**：`memoryCurator` 配置项（默认指向内置 `memory-curator`）按 id 解析；覆盖它就能换掉记忆整理的执行者。
+
+## 作为 dsh agent preset 注册
+
+除 `memoryCurator` 指向的定义外，每个有效定义都会**同时**注册成一个 dsh agent preset（服务 `ctx.agentPresets`），id 为 `presetIdPrefix` + spec id（默认前缀 `xl-`，如 `xl-reviewer`）。插件随后挂一个 `xl_subagent` 委派工具（`@deepseek-ai/dsh-tool-subagent` 实例，`provider: spawn`），其 `agent_preset` 参数的枚举就是当前已注册的 preset id——这是模型经内置委派路径点名这些角色的入口；`xl_agent_run` 与 `@` 提及保持原有完整语义，两条路径并存。
+
+preset 组合的映射规则：
+
+| YAML 字段 | 去向 |
+| --- | --- |
+| `prompt` | `persona` 行的 `prefix`，且 `complete: true`——即子会话的**全部** system prompt |
+| `readOnly: true` | 只读工具行：`fs-search` + `fs`（`read`/`readImage` 开，`write`/`edit` 关），**不挂 shell**——只读由组合硬执行，不靠提示词 |
+| `readOnly: false` | 可写工具行：`fs-search` + 全量 `fs` + 平台 shell（bash/pwsh 按 `process.platform` 各自禁用一个） |
+| `id`/`name`/`description` | preset 同名字段；`description` 追加 `(delegation role; not a session preset)` 注记后写入，会出现在委派工具的枚举描述里；`order` 从 900 起排（内置 preset 为 1–4），在选择器中排末尾 |
+| 其余字段 | 进不了 preset，注册时按 `logger.warn` 列出：`agentPreset`、`model`、`reasoningEffort`、`maxTokens`、`cwd`、`outputSchema`，以及非 `spawn` 的 `provider`。这些保证只在 `xl_agent_run` 路径生效；`timeoutMs` 是插件计时，本就只约束该路径 |
+
+注册与热重载行为：
+
+- 注册按串行队列执行；内容签名未变的定义不会重注册，重排定义顺序也不拆已挂载的组合（`order` 不参与签名）。
+- 目录变更后，`xl_subagent` 工具按当前已注册 id 集合重挂，枚举随之更新；删空最后一个定义会卸载该工具。
+- 注册失败（如其他插件已占用同前缀 id）或组合挂载失败（preset `broken`）只影响该定义，按 `logger.error` 上报，其余照常。
+- 依赖宿主 profile 提供 `agentPresets` 服务（标准 web/desktop 装配具备）；缺失时本插件拒绝加载。
 
 ## 改目录位置
 

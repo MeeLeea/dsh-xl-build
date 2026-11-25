@@ -23,7 +23,9 @@ const BLOCKING_STATUSES: ReadonlySet<NodeStatus> = new Set(['failed', 'skipped',
  *
  * A node whose gating upstream settled anything but `completed` can never run,
  * so it is marked `skipped` — the alternative is a run that waits forever for a
- * node that will never become ready.
+ * node that will never become ready. Two strategies survive a blocking upstream:
+ * a non-`all` join runs while enough upstreams can still arrive, and an error
+ * handler runs only when a source actually failed.
  * @param document - the run's document.
  * @param statuses - current per-node statuses; already-settled nodes keep theirs.
  * @returns the status map with skips propagated.
@@ -33,18 +35,38 @@ export function cascadeSkips(
   statuses: ReadonlyMap<string, NodeStatus>,
 ): Map<string, NodeStatus> {
   const next = new Map(statuses)
+  const isBlocking = (status: NodeStatus | undefined): boolean => status !== undefined && BLOCKING_STATUSES.has(status)
   let changed = true
   while (changed) {
     changed = false
     for (const node of document.nodes) {
       if (next.has(node.id)) continue
       const gating = document.edges.filter((edge) => edge.to === node.id && !NON_GATING_KINDS.has(edge.kind))
-      if (gating.some((edge) => {
-        const source = next.get(edge.from)
-        return source !== undefined && BLOCKING_STATUSES.has(source)
-      })) {
+      if (node.kind === 'join' && node.strategy !== 'all') {
+        // A non-`all` join survives upstreams that can no longer arrive: it is
+        // skipped only when too few can still complete for its strategy.
+        const blocked = gating.filter((edge) => isBlocking(next.get(edge.from))).length
+        const needed = node.strategy === 'any' ? 1 : (node.quorum ?? gating.length)
+        if (gating.length - blocked < needed) {
+          next.set(node.id, 'skipped')
+          changed = true
+        }
+        continue
+      }
+      if (gating.some((edge) => isBlocking(next.get(edge.from)))) {
         next.set(node.id, 'skipped')
         changed = true
+        continue
+      }
+      const errorEdges = document.edges.filter((edge) => edge.to === node.id && edge.kind === 'error')
+      if (errorEdges.length > 0) {
+        const sources = errorEdges.map((edge) => next.get(edge.from))
+        const settled = sources.every((status) => status !== undefined && status !== 'running')
+        const failed = sources.some((status) => status === 'failed')
+        if (settled && !failed) {
+          next.set(node.id, 'skipped')
+          changed = true
+        }
       }
     }
   }

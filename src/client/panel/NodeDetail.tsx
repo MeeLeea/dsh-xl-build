@@ -5,11 +5,9 @@
  */
 import type { ReactNode } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
+import { NODE_STATUS_KEYS } from '../status.ts'
 import type { XlBuildArtifactView, XlBuildNodeView } from '../wire.ts'
 import css from './panel.module.css'
-
-/** Marker appended to preview labels whose wire payload was cut. */
-const TRUNCATED = '[truncated]'
 
 /** Placeholder for an empty preview cell. */
 const EMPTY_PREVIEW = '—'
@@ -43,7 +41,7 @@ export function ArtifactRows(props: PropsLocale<'xl-build'> & {
           </button>
           <span className={css.artifactMeta}>
             {artifact.kind}
-            {artifact.bytes !== undefined ? ' · ' + artifact.bytes + ' B' : ''}
+            {artifact.bytes !== undefined ? ' · ' + props.t('byteSize', { bytes: artifact.bytes }) : ''}
           </span>
         </li>
       ))}
@@ -61,23 +59,23 @@ export function NodeDetail(props: NodeDetailProps): ReactNode {
   return (
     <div className={css.detailWrap}>
       <div className={css.detail}>
-        <span className={css.detailKey}>id</span>
+        <span className={css.detailKey}>{t('detailKeyId')}</span>
         <span className={css.detailValue}>{node.nodeId}</span>
-        <span className={css.detailKey}>kind</span>
+        <span className={css.detailKey}>{t('detailKeyKind')}</span>
         <span className={css.detailValue}>{node.kind}</span>
-        <span className={css.detailKey}>status</span>
-        <span className={css.detailValue}>{node.status}</span>
-        <span className={css.detailKey}>attempt</span>
+        <span className={css.detailKey}>{t('detailKeyStatus')}</span>
+        <span className={css.detailValue}>{t(NODE_STATUS_KEYS[node.status])}</span>
+        <span className={css.detailKey}>{t('detailKeyAttempt')}</span>
         <span className={css.detailValue}>{node.attempt}</span>
         {node.durationMs !== undefined && (
           <>
-            <span className={css.detailKey}>duration</span>
-            <span className={css.detailValue}>{node.durationMs}ms</span>
+            <span className={css.detailKey}>{t('detailKeyDuration')}</span>
+            <span className={css.detailValue}>{t('durationValue', { ms: node.durationMs })}</span>
           </>
         )}
         {node.error !== undefined && (
           <>
-            <span className={css.detailKey}>error</span>
+            <span className={css.detailKey}>{t('detailKeyError')}</span>
             <span className={css.detailValue}>
               <span className={css.errorClass}>{node.error.class}</span>
               {' ' + node.error.message}
@@ -86,11 +84,11 @@ export function NodeDetail(props: NodeDetailProps): ReactNode {
         )}
       </div>
       <div className={css.preview}>
-        <div className={css.previewLabel}>{t('detailInput')}{node.inputTruncated ? ' ' + TRUNCATED : ''}</div>
+        <div className={css.previewLabel}>{t('detailInput')}{node.inputTruncated ? ' ' + t('truncatedMark') : ''}</div>
         <div className={css.previewText}>{node.inputPreview === '' ? EMPTY_PREVIEW : node.inputPreview}</div>
       </div>
       <div className={css.preview}>
-        <div className={css.previewLabel}>{t('detailOutput')}{node.outputTruncated ? ' ' + TRUNCATED : ''}</div>
+        <div className={css.previewLabel}>{t('detailOutput')}{node.outputTruncated ? ' ' + t('truncatedMark') : ''}</div>
         <div className={css.previewText}>{node.outputPreview === '' ? EMPTY_PREVIEW : node.outputPreview}</div>
       </div>
       {node.artifacts.length > 0 && (

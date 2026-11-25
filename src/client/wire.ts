@@ -77,23 +77,47 @@ const RunViewSchema = z.object({
   }).optional(),
 })
 
+const CatalogSchema = z.object({
+  agents: z.array(z.object({ id: z.string(), name: z.string(), description: z.string() })),
+  workflows: z.array(z.object({ id: z.string(), name: z.string(), description: z.string().optional(), mermaid: z.string() })),
+})
+
+const EMPTY_CATALOG: XlBuildView['catalog'] = { agents: [], workflows: [] }
+
 export const XlBuildViewSchema = z.object({
-  catalog: z.object({
-    agents: z.array(z.object({ id: z.string(), name: z.string(), description: z.string() })),
-    workflows: z.array(z.object({ id: z.string(), name: z.string(), description: z.string().optional(), mermaid: z.string() })),
-  }),
+  catalog: CatalogSchema,
   runs: z.array(RunViewSchema),
 })
 
 /**
- * Parse one raw projection value into the view the panel reads.
+ * Parse one raw projection value into the view the panel reads. Degradation is
+ * per part: a malformed catalog falls back to an empty catalog and a malformed
+ * run is dropped, so one bad item never blanks the whole panel.
  * @param value - raw projection snapshot; may be absent or foreign.
- * @returns the parsed view, or undefined when the value is absent or invalid.
+ * @returns the parsed view, or undefined when the value is not an object or carries neither `catalog` nor `runs`.
  */
 export function parseXlBuildView(value: unknown): XlBuildView | undefined {
-  if (value === undefined) return undefined
-  const result = XlBuildViewSchema.safeParse(value)
-  return result.success ? result.data : undefined
+  if (!isRecord(value)) return undefined
+  if (!('catalog' in value) && !('runs' in value)) return undefined
+  const catalogResult = CatalogSchema.safeParse(value.catalog)
+  const runs: XlBuildRunView[] = []
+  const rawRuns: unknown = value.runs
+  if (Array.isArray(rawRuns)) {
+    for (const raw of rawRuns) {
+      const result = RunViewSchema.safeParse(raw)
+      if (result.success) runs.push(result.data)
+    }
+  }
+  return { catalog: catalogResult.success ? catalogResult.data : EMPTY_CATALOG, runs }
+}
+
+/**
+ * Narrow a wire value to a non-null object before reading its members.
+ * @param value - candidate value.
+ * @returns whether the value is a non-null object.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 /** The slice of the projection the panel consumes. */

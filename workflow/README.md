@@ -2,7 +2,7 @@
 
 `dsh-xl-build` 的图式编排：拓扑是磁盘上的声明式文档，`/workflow` 命令负责 `list` / `validate` / `run` / `export`，引擎按节点执行，每次 Run 的 journal、产物和长期记忆各自落盘。
 
-**目录名注意**：运行时扫描的是 `workflowsDir`，默认 `workflows/`（复数，相对 `dsh` 进程工作目录）。本目录（插件源码里的 `workflow/`）存放这份参考文档和示例工作流 `xl-build-pipeline`（`.yml` / `.json` / `.py` 三种格式，见「示例工作流的调用命令」）；`.md` 不在扫描范围内，所以把这里的文件当工作流目录用（`workflowsDir: workflow`）也不会误读本文。
+**目录名注意**：用户目录 `workflowsDir` 默认 `workflows/`（复数，相对 `dsh` 进程工作目录）。本目录（插件包的 `workflow/`）存放这份参考文档和示例工作流 `xl-build-pipeline`（`.yml` / `.json` / `.py` 三种格式，见「示例工作流的调用命令」），并作为**内置工作流目录**随包加载：`run` / `export` / `list` 先查用户目录、再回落内置目录，用户目录中同 id 的有效文档覆盖内置文档；`.md` 不在扫描范围，所以即使用户把本目录设为 `workflowsDir` 也不会误读本文。
 
 ## 创建流程
 
@@ -18,6 +18,7 @@
 - **只认 `.json` / `.yml` / `.yaml`**。`.py` 不参与目录扫描，必须先用插件自带的 `xl_build` 编译成 JSON 放进目录（见「Python DSL」）。
 - **文件和 id 无关**：`run <id>`、`export <id>` 按文档里的 `id` 匹配；`validate <file>` 才按文件路径（相对进程工作目录）。
 - **坏文件只坏自己**：解析或校验失败的文件在 `list` 里显示 `invalid — <错误>`，不影响其它文件；但 `run` 只接受校验通过的文档。
+- **内置目录与优先级**：包内 `workflow/`（以 `xl-build-pipeline.yml` 为标记）随包加载为内置目录，与用户目录合并：用户目录中同 id 的有效文档覆盖内置文档，内置目录内部同 id 的多个文件按文件名字序取第一个。内置文件损坏是打包错误，插件加载直接失败；加载后才损坏的内置文件会被合并逻辑跳过，重启后重新门控。`list` 输出里内置条目带 `(builtin)` 后缀。
 - **schemaVersion 门**：缺失直接拒绝并提示补 `"schemaVersion": 1`；高于本插件支持的版本拒绝并说明原因；低于则逐版迁移（当前只有版本 1）。
 - **校验不查 agent**：`validate` 只验图结构与模板引用，不检查 `agent` 指向的 agent 定义是否存在；未知 id 在 run 时才报 `unknown agent "<id>"`。
 
@@ -75,14 +76,16 @@
 
 - **`branches`**（数组，默认 `[]`）—— 每个分支：`when`（**字符串形式的 JSONLogic**）、`to`（目标节点 id）。按顺序求值，命中即走。
 - **`else`**（节点 id，必填）—— 全部未命中时的目标。
-- 出边必须全是 `kind: branch`，且恰有一条无 `condition` 的边指向 `else`（V6）。router 自身输出是它收到的输入文本，分支边把它继续往下传。
+- 出边必须全是 `kind: branch`，且恰有一条无 `condition` 的边指向 `else`（V6）。router 自身输出是它收到的输入文本，仅所选分支的边把它继续往下传。
+- 运行期只执行命中的那一个分支目标；同一次路由的其它分支目标被标记 `skipped`，其独占下游随之级联跳过。
 
 ### `join` —— 汇聚
 
 - **`strategy`**（枚举，必填）—— `all`（等全部上游）、`any`（首个到达即决定）、`quorum`（到达数达到阈值即决定）。
 - **`quorum`**（≥1 整数，可选）—— `quorum` 策略的阈值，默认等于上游数量。
 - **`failFast`**（boolean，默认 `false`）—— 当前引擎未读取。
-- 入边必须全是 `kind: fan-in`，出边必须全是 `kind: flow`（V7）。输出是按文档顺序拼接的 `[from <nodeId>]` 段落。
+- 入边必须全是 `kind: fan-in`，出边必须全是 `kind: flow`（V7）。输出是**已到达**上游载荷按文档顺序拼接的 `[from <nodeId>]` 段落，每个上游一段。
+- 上游失败时的行为按策略区分：`any`/`quorum` 只要仍有足够上游可能到达就照常执行（已失败的上游不计入），`all` 遇到任一上游阻塞（失败/跳过/取消）即被跳过。
 
 ### `loop` —— 循环
 
@@ -90,8 +93,9 @@
 - **`until`**（对象，必填）—— `{ "expr": "<JSONLogic 字符串>" }`，每轮结束对 `{ input, nodes, edges }`（本轮 body 的结果）求值，为真则收敛。
 - **`maxIters`**（≥1 整数，必填）—— 轮数上限。
 - **`onMaxIters`**（枚举，默认 `fail`）—— `fail`（抛错）/ `continue`（照常继续下游）/ `stop`（停止该循环并继续）。
-- **`carry`**（边 id 数组，可选）—— 轮间回带的 loop-back 边；默认取全部 loop-back 边。
-- **`emit`**（边 id 数组，可选）—— 收敛后对外发出的边；默认取本节点的出边。
+- **`carry`**（边 id 数组，可选）—— 轮间回带的 **loop-back 边 id**；默认取本循环的全部 loop-back 边。每轮结束后按这些边在本轮记录的载荷序列化作为下一轮输入，首轮用 loop 的入边文本。
+- **`emit`**（边 id 数组，可选）—— 循环对外输出所取的边 id；默认取 `carry` 的序列化值（即以 `\n\n` 连接）。取不到的 id 被丢弃；`emit` 指向的边必须在本轮被记录（通常是 loop-back 边）。
+- 循环体只在循环内部执行：每个调度作用域（顶层与每个循环轮）开始调度前，都会把该作用域内各 loop 的 body 闭包节点预标记为 `skipped`，所以 `loop -> body` 的 flow 边不会让 body 在同一层再跑一次；嵌套循环的内层 body 也因此不会在每一外轮额外多跑一次。
 - 循环体必须闭合：只有 loop 节点自己可以跨边界连边（V15），loop-back 边必须落在某个 loop 节点上且起点在 body 内（V9）。
 
 ### `subworkflow` —— 调另一个工作流
@@ -115,6 +119,7 @@
 - **`id`**（string，必填）—— 文档内唯一，命名规则同节点 id。
 - **`from`** / **`to`**（节点 id，必填）—— 端点必须存在（V3）；不允许自环。
 - **`kind`**（枚举，必填）—— `flow`（普通）、`branch`（router 出边）、`fan-out`、`fan-in`（join 入边）、`loop-back`（必须回到 loop 节点）、`error`（失败兜底：最多一条，且不能指向 `join`/`loop`，V17）。
+- **`error` 边的激活语义** —— 只在来源节点失败时激活：来源成功、或其所有来源都已结算且无一失败时，其目标被标记 `skipped`。error 边只选择一个报告/恢复节点，**不改变 Run 结果**——来源失败时 Run 仍以 `failed` 结算。
 - **`format`**（枚举，默认 `text`）—— `str`（压成单行）/ `text` / `md`（加 markdown 提示头）/ `json`（要求上游是声明了 `outputSchema` 的 agent 节点，V12）。
 - **`label`**（string，可选）—— 仅用于展示与 mermaid。
 - **`select`**（string，可选）—— schema 接受但引擎未实现；要改载荷请用 `template`。
@@ -285,11 +290,11 @@ schema 接受、但引擎当前不消费或直接失败的字段/路径，写工
 
 本目录随附示例工作流 `xl-build-pipeline`：`input(goal)` → `manager` 出执行计划 → `worker` 与 `scripting-engineer` 并行实现 → `join` 汇总 → `reviewer` 只读复核 → `output`。`xl-build-pipeline.yml` 与 `xl-build-pipeline.json` 内容逐字段一致，`xl-build-pipeline.py` 是 Python DSL 源码（目录扫描不识别 `.py`，须先编译）。四个 `agent` 引用（`manager` / `worker` / `reviewer` / `scripting-engineer`）都是包内置定义，无需额外配置。
 
-运行前提：`workflowsDir` 指到本目录（见「目录与配置覆盖」），`validate` 的文件路径按 `dsh` 进程工作目录解析。
+运行前提：无需配置——本目录作为内置工作流目录随包加载，`run` / `list` / `export` 在用户目录之外自动回落到这里（用户目录同 id 的文档覆盖内置版本，见「目录与文件约定」）。`validate` 按文件路径校验，路径相对 `dsh` 进程工作目录解析，示例路径按实际安装位置调整前缀。
 
 | 命令 | 作用 |
 | --- | --- |
-| `/workflow validate workflow/xl-build-pipeline.yml` | 校验一个文档文件；通过回答 `Valid: xl-build-pipeline (7 nodes, 7 edges)`，失败逐条列出 `V<n>: <原因>`。`.json` 产物同理 |
+| `/workflow validate <插件目录>/workflow/xl-build-pipeline.yml` | 校验一个文档文件；通过回答 `Valid: xl-build-pipeline (7 nodes, 7 edges)`，失败逐条列出 `V<n>: <原因>`。`.json` 产物同理 |
 | `/workflow run xl-build-pipeline "<目标>"` | 按文档 `id` 运行；位置参数填进文档里唯一未填的声明输入（这里等价 `--input goal=<目标>`），多输入文档用 `--input k=v`。命令立即返回 `started run <runId> for <id>`，结束时向发起会话发 follow-up |
 | `/workflow run xl-build-pipeline "<目标>" --self plan` | 加 `--self <nodeId>` 后该节点挂在发起会话执行，用户可继续对话 |
 | `/workflow list` | 列出 `workflowsDir` 下全部文档（`- <id>: <name> (n nodes, m edges)`）；坏文件显示 `invalid — <错误>`，不影响其它文件 |
@@ -297,4 +302,4 @@ schema 接受、但引擎当前不消费或直接失败的字段/路径，写工
 | `python py/xl_build build workflow/xl-build-pipeline.py -o workflow/xl-build-pipeline.py.json` | 把 `.py` DSL 源码编译成插件可读的 JSON；改过源码后重跑，再对产物执行 `validate` |
 | `python -m xl_build build <script>.py -o <out>.json` | 上一行的等价形式，需先把 `py/` 加入 `PYTHONPATH` |
 
-`yml` 与 `json` 同 id 共存时，`run` 取扫描顺序里的第一个有效文档；两者内容一致，行为无差别。
+`yml` 与 `json` 同 id 共存时：用户目录里 `run` 取扫描顺序的第一个有效文档；内置目录里同 id 按文件名字序去重。两者内容一致，行为无差别。

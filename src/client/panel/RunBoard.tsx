@@ -1,16 +1,19 @@
 import type { ReactNode } from 'react'
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import type { XlBuildRunView } from '../wire.ts'
+import { RUN_STATUS_KEYS } from '../status.ts'
+import type { XlBuildArtifactView, XlBuildRunView } from '../wire.ts'
 import { ArtifactRows } from './NodeDetail.tsx'
 import css from './panel.module.css'
 
-/** Run statuses the panel locale names. */
-const RUN_STATUS_KEYS = {
-  running: 'runStatus.running',
-  completed: 'runStatus.completed',
-  failed: 'runStatus.failed',
-  cancelled: 'runStatus.cancelled',
-} as const satisfies Record<XlBuildRunView['status'], `runStatus.${XlBuildRunView['status']}`>
+/** Drop later artifacts that repeat an id already kept, preserving order. */
+function uniqueArtifacts(artifacts: readonly XlBuildArtifactView[]): XlBuildArtifactView[] {
+  const seen = new Set<string>()
+  return artifacts.filter((artifact) => {
+    if (seen.has(artifact.id)) return false
+    seen.add(artifact.id)
+    return true
+  })
+}
 
 /** Memory line of a run view: injected bytes plus the curator verdict. */
 function memoryLines(run: XlBuildRunView, t: PropsLocale<'xl-build'>['t']): string[] {
@@ -39,7 +42,18 @@ export function RunBoard(props: PropsLocale<'xl-build'> & {
   readonly onOpen: (address: string) => void
 }): ReactNode {
   const { run, t } = props
-  const grouped = run.nodes.filter((node) => node.artifacts.length > 0)
+  // Every artifact renders exactly once: node groups claim their ids in node
+  // order, and the remaining run-level artifacts follow under one heading.
+  const claimed = new Set<string>()
+  const groups = run.nodes.flatMap((node) => {
+    const artifacts = uniqueArtifacts(node.artifacts).filter((artifact) => {
+      if (claimed.has(artifact.id)) return false
+      claimed.add(artifact.id)
+      return true
+    })
+    return artifacts.length === 0 ? [] : [{ nodeId: node.nodeId, artifacts }]
+  })
+  const ungrouped = uniqueArtifacts(run.artifacts).filter((artifact) => !claimed.has(artifact.id))
   return (
     <div className={css.detailWrap}>
       <div className={css.runSummaryLine}>
@@ -51,16 +65,26 @@ export function RunBoard(props: PropsLocale<'xl-build'> & {
           : null}
       </div>
       {memoryLines(run, t).map((line) => <div key={line} className={css.memoryLine}>{line}</div>)}
-      {grouped.length === 0
+      {groups.length === 0
         ? (run.artifacts.length === 0
           ? <div className={css.empty}>{t('noArtifacts')}</div>
-          : <ArtifactRows artifacts={run.artifacts} t={t} onOpen={props.onOpen} />)
-        : grouped.map((node) => (
-          <div key={node.nodeId} className={css.artifactGroup}>
-            <div className={css.artifactGroupHead}>{node.nodeId}</div>
-            <ArtifactRows artifacts={node.artifacts} t={t} onOpen={props.onOpen} />
-          </div>
-        ))}
+          : <ArtifactRows artifacts={uniqueArtifacts(run.artifacts)} t={t} onOpen={props.onOpen} />)
+        : (
+          <>
+            {groups.map((group) => (
+              <div key={group.nodeId} className={css.artifactGroup}>
+                <div className={css.artifactGroupHead}>{group.nodeId}</div>
+                <ArtifactRows artifacts={group.artifacts} t={t} onOpen={props.onOpen} />
+              </div>
+            ))}
+            {ungrouped.length > 0 && (
+              <div className={css.artifactGroup}>
+                <div className={css.artifactGroupHead}>{t('artifactsUngrouped')}</div>
+                <ArtifactRows artifacts={ungrouped} t={t} onOpen={props.onOpen} />
+              </div>
+            )}
+          </>
+        )}
     </div>
   )
 }

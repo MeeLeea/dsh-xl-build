@@ -189,6 +189,8 @@ interface GraphScope {
   /** Inbound payloads waiting to be consumed, keyed by target node id. */
   readonly inbound: Map<string, NodeInbound[]>
   readonly active: Map<string, Promise<void>>
+  /** Router selections in this scope: router node id -> the branch target it chose. */
+  readonly selections: Map<string, string>
   /** First failure inside this scope, propagated to a loop node when scoped. */
   firstFailure?: { readonly errorClass: NodeErrorClass, readonly message: string }
 }
@@ -440,6 +442,7 @@ class WorkflowRun<P> {
       edgePayloads: this.edgePayloads,
       inbound: this.inbound,
       active: this.active,
+      selections: new Map(),
     }
   }
 
@@ -469,6 +472,7 @@ class WorkflowRun<P> {
 
   /** One scheduling loop over one scope; returns when the scope settled. */
   private async runGraph(scope: GraphScope): Promise<void> {
+    this.markLoopBodiesSkipped(scope)
     for (;;) {
       const step = planRunStep({
         document: scope.document,
@@ -482,12 +486,25 @@ class WorkflowRun<P> {
         throw new Error(`run exceeded maxSteps (${this.options.limits.maxSteps})`)
       }
       const startIds: string[] = []
+      let skippedBranch = false
       for (const id of step.start) {
         const node = this.nodeOf(scope.document, id)
         if (node.kind === 'join' && !this.joinDecided(scope, node)) continue
+        const branch = this.branchSelection(scope, id)
+        if (branch === 'wait') continue
+        if (branch === 'skip') {
+          // The router chose a sibling branch; this target and its exclusive
+          // downstream settle as skipped on the next skip propagation.
+          scope.statuses.set(id, 'skipped')
+          skippedBranch = true
+          continue
+        }
         startIds.push(id)
       }
       if (startIds.length === 0 && scope.active.size === 0) {
+        // A skipped branch may have consumed the only planned slot; re-plan so
+        // the selected target still starts. Otherwise nothing can progress.
+        if (skippedBranch) continue
         // Undecided joins with nothing running can never decide — fail loud instead of spinning.
         throw new Error('scheduler stalled: no node can start and no node is running')
       }
@@ -506,13 +523,34 @@ class WorkflowRun<P> {
 
   /** Whether one join's strategy is satisfied by its current arrivals. */
   private joinDecided(scope: GraphScope, node: WorkflowNode & { kind: 'join' }): boolean {
-    return this.mergeJoin(scope, node).decided
+    return this.mergeJoin(scope, node, this.arrivalsOf(scope, node.id)).decided
   }
 
-  /** The join merge for one node over its current arrivals. */
-  private mergeJoin(scope: GraphScope, node: WorkflowNode & { kind: 'join' }) {
+  /**
+   * Decide whether a node with incoming `branch` edges may run this tick.
+   * @param scope - the scope whose router selections apply.
+   * @param nodeId - the candidate node.
+   * @returns `allow` when the node has no branch in-edges or was chosen,
+   *   `skip` when a router chose a sibling, and `wait` while no selection exists.
+   */
+  private branchSelection(scope: GraphScope, nodeId: string): 'allow' | 'skip' | 'wait' {
+    const branchEdges = scope.document.edges.filter((edge) => edge.to === nodeId && edge.kind === 'branch')
+    if (branchEdges.length === 0) return 'allow'
+    const selections = branchEdges
+      .map((edge) => scope.selections.get(edge.from))
+      .filter((selection): selection is string => selection !== undefined)
+    if (selections.length === 0) return 'wait'
+    return selections.includes(nodeId) ? 'allow' : 'skip'
+  }
+
+  /** The join merge for one node over the arrivals it has already consumed. */
+  private mergeJoin(
+    scope: GraphScope,
+    node: WorkflowNode & { kind: 'join' },
+    arrivals: readonly NodeInbound[],
+  ) {
     const expected = this.upstreamIds(scope.document, node.id)
-    return mergeJoinInputs(node, expected, this.arrivalsOf(scope, node.id).map((arrival) => ({
+    return mergeJoinInputs(node, expected, arrivals.map((arrival) => ({
       nodeId: arrival.from,
       text: serializeEdgeValue(arrival.value, arrival.format),
     })))
@@ -636,6 +674,7 @@ class WorkflowRun<P> {
         if (outcome === undefined || outcome.status !== 'completed' || outcome.nextNode === undefined) {
           throw new NodeExecutionError('deterministic', `router "${node.id}" selected no branch`)
         }
+        scope.selections.set(node.id, outcome.nextNode)
         // A router's value is the payload it forwards, so the branch edge carries it through.
         return { output: composedText, artifacts: [], nextNode: outcome.nextNode }
       }
@@ -646,9 +685,9 @@ class WorkflowRun<P> {
       case 'tool':
         return { output: await this.runToolNode(node, frame), artifacts: [] }
       case 'join':
-        return { output: this.mergeJoin(scope, node).text, artifacts: [] }
+        return { output: this.mergeJoin(scope, node, inbound).text, artifacts: [] }
       case 'loop':
-        return { output: await this.runLoopNode(node, composedText), artifacts: [] }
+        return { output: await this.runLoopNode(scope, node, composedText), artifacts: [] }
       case 'subworkflow':
         return { output: await this.runSubworkflowNode(node, frame), artifacts: [] }
     }
@@ -732,46 +771,50 @@ class WorkflowRun<P> {
   }
 
   /** Drive one loop node's body rounds inside their own frames. */
-  private async runLoopNode(node: WorkflowNode & { kind: 'loop' }, loopIn: string): Promise<unknown> {
-    const bodyIds = this.bodyClosure(node.body)
-    const bodyNodes = this.options.document.nodes.filter((candidate) => bodyIds.has(candidate.id))
-    const bodyEdges = this.options.document.edges.filter((edge) => bodyIds.has(edge.from) && bodyIds.has(edge.to))
+  private async runLoopNode(scope: GraphScope, node: WorkflowNode & { kind: 'loop' }, loopIn: string): Promise<unknown> {
+    const document = scope.document
+    const bodyIds = this.bodyClosure(document, node.body)
+    const bodyNodes = document.nodes.filter((candidate) => bodyIds.has(candidate.id))
+    // A loop-back edge ends at the loop node, outside the body, so it is kept in
+    // the round document to record the payload the next round carries.
+    const bodyEdges = document.edges.filter((edge) => bodyIds.has(edge.from) && (bodyIds.has(edge.to) || edge.kind === 'loop-back'))
     const carryIds = node.carry ?? bodyEdges.filter((edge) => edge.kind === 'loop-back').map((edge) => edge.id)
     let carryTexts: string[] = []
     for (let iteration = 1; ; iteration += 1) {
       const roundIn = iteration === 1 ? loopIn : carryTexts.join('\n\n')
-      const scope: GraphScope = {
-        document: { ...this.options.document, nodes: bodyNodes, edges: bodyEdges },
+      const roundScope: GraphScope = {
+        document: { ...document, nodes: bodyNodes, edges: bodyEdges },
         frame: { id: randomUUID(), loopId: node.id, iteration },
         statuses: new Map(),
         outputs: new Map(),
         edgePayloads: new Map(),
         inbound: new Map(),
         active: new Map(),
+        selections: new Map(),
       }
-      scope.inbound.set(node.body, [{
+      roundScope.inbound.set(node.body, [{
         edgeId: 'loop.in',
         from: node.id,
         to: node.body,
         format: 'text',
         value: roundIn,
-        maxBytes: this.options.document.defaults.edgeMaxBytes,
+        maxBytes: document.defaults.edgeMaxBytes,
       }])
-      await this.runGraph(scope)
-      if (scope.firstFailure !== undefined) {
+      await this.runGraph(roundScope)
+      if (roundScope.firstFailure !== undefined) {
         throw new NodeExecutionError(
-          scope.firstFailure.errorClass,
-          `loop "${node.id}" body failed: ${scope.firstFailure.message}`,
+          roundScope.firstFailure.errorClass,
+          `loop "${node.id}" body failed: ${roundScope.firstFailure.message}`,
         )
       }
       carryTexts = carryIds.map((edgeId) => serializeEdgeValue(
-        scope.edgePayloads.get(edgeId) ?? null,
-        this.edgeById(edgeId).format,
+        roundScope.edgePayloads.get(edgeId) ?? null,
+        this.edgeIn(document, edgeId).format,
       ))
       const decision = decideLoopRound(node, iteration, {
         input: this.inputs,
-        nodes: Object.fromEntries(scope.outputs),
-        edges: Object.fromEntries(scope.edgePayloads),
+        nodes: Object.fromEntries(roundScope.outputs),
+        edges: Object.fromEntries(roundScope.edgePayloads),
       })
       if (decision.kind === 'fail') {
         throw new NodeExecutionError('deterministic', decision.reason)
@@ -780,7 +823,13 @@ class WorkflowRun<P> {
       // the loop itself stops iterating and converges on its carry payload.
       if (decision.kind === 'stop' || (decision.kind === 'continue' && iteration >= node.maxIters)) {
         return node.emit !== undefined && node.emit.length > 0
-          ? node.emit.map((edgeId) => scope.edgePayloads.get(edgeId) ?? null)
+          ? node.emit
+            .map((edgeId) => {
+              const payload = roundScope.edgePayloads.get(edgeId)
+              return payload === undefined ? null : serializeEdgeValue(payload, this.edgeIn(document, edgeId).format)
+            })
+            .filter((text): text is string => text !== null)
+            .join('\n\n')
           : carryTexts.join('\n\n')
       }
     }
@@ -801,6 +850,7 @@ class WorkflowRun<P> {
       inputs,
       limits: this.options.limits,
       services: this.options.services,
+      signal: this.controller.signal,
     }, this.depth + 1)
     const summary = await childRun.start()
     if (summary.outcome !== 'completed') {
@@ -884,7 +934,7 @@ class WorkflowRun<P> {
   private takeInbound(scope: GraphScope, nodeId: string): NodeInbound[] {
     const arrivals = scope.inbound.get(nodeId) ?? []
     scope.inbound.delete(nodeId)
-    const order = new Map(this.options.document.edges.map((edge, index) => [edge.id, index]))
+    const order = new Map(scope.document.edges.map((edge, index) => [edge.id, index]))
     return [...arrivals].sort((left, right) => (order.get(left.edgeId) ?? 0) - (order.get(right.edgeId) ?? 0))
   }
 
@@ -899,8 +949,8 @@ class WorkflowRun<P> {
       .map((edge) => edge.from)
   }
 
-  private edgeById(edgeId: string): WorkflowEdge {
-    const edge = this.options.document.edges.find((candidate) => candidate.id === edgeId)
+  private edgeIn(document: WorkflowDocument, edgeId: string): WorkflowEdge {
+    const edge = document.edges.find((candidate) => candidate.id === edgeId)
     if (edge === undefined) throw new Error(`unknown edge "${edgeId}"`)
     return edge
   }
@@ -911,13 +961,18 @@ class WorkflowRun<P> {
     return node
   }
 
-  /** Node ids reachable from the body entry through non-loop-back edges (`V15` closure). */
-  private bodyClosure(entryId: string): Set<string> {
+  /**
+   * Node ids reachable from the body entry through non-loop-back edges (`V15` closure).
+   * @param document - the document whose edges define the closure.
+   * @param entryId - the loop body's entry node.
+   * @returns every node the loop owns, including nested loops it drives.
+   */
+  private bodyClosure(document: WorkflowDocument, entryId: string): Set<string> {
     const body = new Set<string>([entryId])
     let changed = true
     while (changed) {
       changed = false
-      for (const edge of this.options.document.edges) {
+      for (const edge of document.edges) {
         if (edge.kind === 'loop-back') continue
         if (body.has(edge.from) && !body.has(edge.to)) {
           body.add(edge.to)
@@ -926,6 +981,27 @@ class WorkflowRun<P> {
       }
     }
     return body
+  }
+
+  /**
+   * Mark every loop-owned node in one scope skipped before it schedules.
+   *
+   * A `loop -> body` flow edge makes the body reachable at the same level too,
+   * so without this the body would run once more after the loop settled. Every
+   * scope — the top level and each loop round — marks the body closure of the
+   * loops it owns, so a nested loop's body is skipped in each outer round as
+   * well. A loop node is never inside its own body closure, so it still
+   * schedules.
+   * @param scope - the document and status map to pre-mark.
+   */
+  private markLoopBodiesSkipped(scope: GraphScope): void {
+    const { document, statuses } = scope
+    for (const node of document.nodes) {
+      if (node.kind !== 'loop') continue
+      for (const id of this.bodyClosure(document, node.body)) {
+        statuses.set(id, 'skipped')
+      }
+    }
   }
 
   /**

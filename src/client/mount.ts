@@ -84,16 +84,20 @@ function createWireSource(ctx: ClientContext): WireSource {
     return { wire: { view: undefined }, sourceId: undefined }
   }
 
-  const applyNext = (next: { readonly wire: XlBuildWire, readonly sourceId: SessionId | undefined }, notify: boolean): void => {
-    if (next.sourceId !== boundSessionId) {
-      stopFace?.()
-      stopFace = undefined
-      boundSessionId = next.sourceId
-      if (next.sourceId !== undefined) {
-        const face = ctx.sessions.binding(next.sourceId)?.session.projections.faceOf(CATALOG_PROJECTION_KEY)
-        stopFace = face?.subscribe(() => applyNext(read(), true)) ?? undefined
-      }
+  /** Point the live projection face at the session the wire now reads. */
+  const bindFace = (sourceId: SessionId | undefined): void => {
+    if (sourceId === boundSessionId) return
+    stopFace?.()
+    stopFace = undefined
+    boundSessionId = sourceId
+    if (sourceId !== undefined) {
+      const face = ctx.sessions.binding(sourceId)?.session.projections.faceOf(CATALOG_PROJECTION_KEY)
+      stopFace = face?.subscribe(() => applyNext(read(), true)) ?? undefined
     }
+  }
+
+  const applyNext = (next: { readonly wire: XlBuildWire, readonly sourceId: SessionId | undefined }, notify: boolean): void => {
+    bindFace(next.sourceId)
     if (next.wire.view !== cached.view) {
       cached = next.wire
       if (notify) for (const listener of [...listeners]) listener()
@@ -102,9 +106,10 @@ function createWireSource(ctx: ClientContext): WireSource {
 
   return {
     getSnapshot: () => {
-      // Never notify here: useSyncExternalStore requires getSnapshot to be
-      // observable-free and ref-stable between renders.
-      applyNext(read(), false)
+      // Pure read for useSyncExternalStore: no binding, subscription, or
+      // notification; the cached object stays ref-stable while the view is.
+      const next = read()
+      if (next.wire.view !== cached.view) cached = next.wire
       return cached
     },
     subscribe: (listener) => {

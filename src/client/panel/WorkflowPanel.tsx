@@ -10,6 +10,7 @@ import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-cli
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import { layoutWorkflow } from '../graph/layout.ts'
 import { WorkflowGraph, type GraphEdgeState, type GraphNodeStatus } from '../graph/render.tsx'
+import { NODE_STATUS_KEYS, RUN_STATUS_KEYS } from '../status.ts'
 import type { WireSource, XlBuildRunView, XlBuildView } from '../wire.ts'
 import { ExportMermaid } from './ExportMermaid.tsx'
 import { NodeDetail } from './NodeDetail.tsx'
@@ -44,9 +45,9 @@ function edgeStatesOf(run: XlBuildRunView): Record<string, GraphEdgeState> {
   }]))
 }
 
-/** One selector row: workflow, outcome, and a short run id. */
-function runLabel(run: XlBuildRunView): string {
-  return run.workflowId + ' \u00b7 ' + run.status + ' \u00b7 ' + run.runId.slice(0, 8)
+/** One selector row: workflow, localized outcome, and a short run id. */
+function runLabel(run: XlBuildRunView, t: PropsLocale<'xl-build'>['t']): string {
+  return run.workflowId + ' \u00b7 ' + t(RUN_STATUS_KEYS[run.status]) + ' \u00b7 ' + run.runId.slice(0, 8)
 }
 
 /**
@@ -58,7 +59,7 @@ export function WorkflowPanel(props: WorkflowPanelProps): ReactNode {
   const { t } = props
   // InjectFace passes the injected face's members through verbatim.
   const wire = useSyncExternalStore(props.wire.subscribe, props.wire.getSnapshot)
-  const [runIndex, setRunIndex] = useState(0)
+  const [selectedRunId, setSelectedRunId] = useState<string | undefined>(undefined)
   const [selectedNodeId, setSelectedNodeId] = useState<string | undefined>(undefined)
 
   const view: XlBuildView | undefined = wire.view
@@ -69,7 +70,9 @@ export function WorkflowPanel(props: WorkflowPanelProps): ReactNode {
     return <div className={css.empty}>{t('emptyNoRuns')}</div>
   }
 
-  const run = view.runs[Math.min(runIndex, view.runs.length - 1)] as XlBuildRunView
+  // Selection is by run id, so a newly arriving run never silently replaces the
+  // user's choice; a vanished run falls back to the first without extra state.
+  const run = (view.runs.find((candidate) => candidate.runId === selectedRunId) ?? view.runs[0]) as XlBuildRunView
   const catalogWorkflow = view.catalog.workflows.find((workflow) => workflow.id === run.workflowId)
   const selected = run.nodes.find((node) => node.nodeId === selectedNodeId)
   const layout = layoutWorkflow(
@@ -86,13 +89,12 @@ export function WorkflowPanel(props: WorkflowPanelProps): ReactNode {
           className={css.selector}
           value={run.runId}
           onChange={(event) => {
-            const index = view.runs.findIndex((candidate) => candidate.runId === event.target.value)
-            setRunIndex(index < 0 ? 0 : index)
+            setSelectedRunId(event.target.value)
             setSelectedNodeId(undefined)
           }}
         >
           {view.runs.map((candidate) => (
-            <option key={candidate.runId} value={candidate.runId}>{runLabel(candidate)}</option>
+            <option key={candidate.runId} value={candidate.runId}>{runLabel(candidate, t)}</option>
           ))}
         </select>
         {catalogWorkflow !== undefined && (
@@ -103,6 +105,13 @@ export function WorkflowPanel(props: WorkflowPanelProps): ReactNode {
       <div className={css.heading}>{t('topologyHeading')}</div>
       <WorkflowGraph
         layout={layout}
+        ariaLabel={t('topologyAriaLabel')}
+        truncatedMark={t('truncatedMark')}
+        nodeAriaLabel={(node, status) => t('graphNodeAria', {
+          id: node.id,
+          kind: node.kind,
+          status: status === undefined ? t('runStatus.idle') : t(NODE_STATUS_KEYS[status]),
+        })}
         nodeStatuses={nodeStatusesOf(run)}
         edgeStates={edgeStatesOf(run)}
         selectedNodeId={selected?.nodeId}

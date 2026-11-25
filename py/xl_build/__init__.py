@@ -21,6 +21,32 @@ class XlBuildError(Exception):
     """A definition the DSL cannot turn into a self-consistent document."""
 
 
+_EDGE_KINDS = ("flow", "branch", "fan-out", "fan-in", "loop-back", "error")
+_EDGE_FORMATS = ("str", "text", "md", "json")
+_JOIN_STRATEGIES = ("all", "any", "quorum")
+_LOOP_ON_MAX_ITERS = ("fail", "continue", "stop")
+
+
+def _is_int(value: Any) -> bool:
+    """A real integer, excluding bool (which is an int subclass)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _checked_context(node_id: str, context: Any) -> Any:
+    """Validate an agent context against AgentContextSchema; return a plain copy."""
+    if isinstance(context, dict) and set(context) == {"lastMessages"}:
+        count = context["lastMessages"]
+        if not _is_int(count) or count < 1:
+            raise XlBuildError(f"agent node '{node_id}' context.lastMessages must be an integer >= 1")
+        return dict(context)
+    if isinstance(context, dict) and set(context) == {"from"} and context["from"] in ("run-input", "memory"):
+        return dict(context)
+    raise XlBuildError(
+        f"agent node '{node_id}' context must be 'none', a lastMessages object, "
+        "'from': 'run-input', or 'from': 'memory'"
+    )
+
+
 def defined_workflows() -> list["Workflow"]:
     """Every Workflow registered by the script executed in this process."""
     return list(_DEFINED)
@@ -62,9 +88,24 @@ class Workflow:
     def to_document(self) -> dict[str, Any]:
         """The finished JSON document, deriving entry from the first node."""
         doc = self._doc
+        if len(doc["nodes"]) == 0:
+            raise XlBuildError(f"workflow '{doc['id']}' defines no nodes")
+        node_ids: set[str] = set()
+        for node in doc["nodes"]:
+            node_id = node["id"]
+            if node_id in node_ids:
+                raise XlBuildError(f"duplicate node id '{node_id}' in workflow '{doc['id']}'")
+            node_ids.add(node_id)
+        for edge in doc["edges"]:
+            if edge["from"] not in node_ids:
+                raise XlBuildError(
+                    f"edge '{edge['id']}' names unknown node '{edge['from']}' in workflow '{doc['id']}'"
+                )
+            if edge["to"] not in node_ids:
+                raise XlBuildError(
+                    f"edge '{edge['id']}' names unknown node '{edge['to']}' in workflow '{doc['id']}'"
+                )
         if "entry" not in doc:
-            if len(doc["nodes"]) == 0:
-                raise XlBuildError(f"workflow '{doc["id"]}' defines no nodes")
             doc["entry"] = doc["nodes"][0]["id"]
         return doc
 
@@ -117,10 +158,13 @@ class Workflow:
         node["kind"] = "agent"
         node["agent"] = agent
         node["task"] = task
-        node["context"] = context
+        if context != "none":
+            node["context"] = _checked_context(id, context)
         if self_:
             node["self"] = True
         if output_schema is not None:
+            if not isinstance(output_schema, dict):
+                raise XlBuildError(f"agent node '{id}' output_schema must be a dict")
             node["outputSchema"] = output_schema
         return self._add(node)
 
@@ -136,6 +180,8 @@ class Workflow:
         max_attempts: Optional[int] = None,
     ) -> "Workflow":
         """Add a script node; pass exactly one of command (shell) or script (ptc)."""
+        if (command is None) == (script is None):
+            raise XlBuildError(f"script node '{id}' needs exactly one of command or script")
         node = self._base(id, timeout_ms, max_attempts)
         node["kind"] = "script"
         node["runtime"] = runtime
@@ -174,12 +220,13 @@ class Workflow:
         max_attempts: Optional[int] = None,
     ) -> "Workflow":
         """Add a router node; branches is a sequence of (jsonlogic, target id) pairs."""
+        if else_ is None:
+            raise XlBuildError(f"router node '{id}' needs an else target")
         node = self._base(id, timeout_ms, max_attempts)
         node["kind"] = "router"
         if branches is not None:
             node["branches"] = [{"when": when, "to": to} for when, to in branches]
-        if else_ is not None:
-            node["else"] = else_
+        node["else"] = else_
         return self._add(node)
 
     def join(
@@ -192,6 +239,10 @@ class Workflow:
         max_attempts: Optional[int] = None,
     ) -> "Workflow":
         """Add a join node; strategy is all, any, or quorum (with quorum=n)."""
+        if strategy not in _JOIN_STRATEGIES:
+            raise XlBuildError(f"join node '{id}' strategy must be one of {', '.join(_JOIN_STRATEGIES)}")
+        if quorum is not None and (not _is_int(quorum) or quorum < 1):
+            raise XlBuildError(f"join node '{id}' quorum must be an integer >= 1")
         node = self._base(id, timeout_ms, max_attempts)
         node["kind"] = "join"
         node["strategy"] = strategy
@@ -214,6 +265,10 @@ class Workflow:
         max_attempts: Optional[int] = None,
     ) -> "Workflow":
         """Add a loop node over body; until is a JSONLogic expression on edges."""
+        if not _is_int(max_iters) or max_iters < 1:
+            raise XlBuildError(f"loop node '{id}' max_iters must be an integer >= 1")
+        if on_max_iters not in _LOOP_ON_MAX_ITERS:
+            raise XlBuildError(f"loop node '{id}' on_max_iters must be one of {', '.join(_LOOP_ON_MAX_ITERS)}")
         node = self._base(id, timeout_ms, max_attempts)
         node["kind"] = "loop"
         node["body"] = body
@@ -283,6 +338,10 @@ class Workflow:
         max_bytes: Optional[int] = None,
     ) -> "Workflow":
         """Add an edge; kind is flow, branch, fan-out, fan-in, loop-back, or error."""
+        if kind not in _EDGE_KINDS:
+            raise XlBuildError(f"edge {from_} -> {to} kind must be one of {', '.join(_EDGE_KINDS)}")
+        if format not in _EDGE_FORMATS:
+            raise XlBuildError(f"edge {from_} -> {to} format must be one of {', '.join(_EDGE_FORMATS)}")
         used = {edge["id"] for edge in self._doc["edges"]}
         if id is None:
             base = f"{from_}-to-{to}"
@@ -292,7 +351,7 @@ class Workflow:
                 id = f"{base}-{counter}"
                 counter += 1
         elif id in used:
-            raise XlBuildError(f"duplicate edge id '{id}' in workflow '{self._doc["id"]}'")
+            raise XlBuildError(f"duplicate edge id '{id}' in workflow '{self._doc['id']}'")
         edge: dict[str, Any] = {"id": id, "from": from_, "to": to, "kind": kind}
         if format != "text":
             edge["format"] = format

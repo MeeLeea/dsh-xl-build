@@ -17,6 +17,13 @@ coverage/
 *.tmp
 .npm-cache/
 
+# Python bytecode from the bundled py/xl_build DSL
+__pycache__/
+*.pyc
+
+# Local test-run layout dump
+/vitest-layout.txt
+
 # OS metadata
 .DS_Store
 Thumbs.db

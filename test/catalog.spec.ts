@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -30,6 +30,19 @@ const VALID: AgentRegistryEntry = {
 function workflowsDir(): string {
   return mkdtempSync(join(tmpdir(), 'dsh-xl-build-catalog-'))
 }
+
+/** One valid workflow document written by the source-change test. */
+const RELEASE_YAML = [
+  'schemaVersion: 1',
+  'id: release',
+  'name: Release',
+  'entry: start',
+  'nodes:',
+  '  - kind: note',
+  '    id: start',
+  '    text: x',
+  'edges: []',
+].join('\n')
 
 describe('buildCatalog', () => {
   it('lists valid agents without their prompts', () => {
@@ -110,6 +123,36 @@ describe('catalog publisher', () => {
     publisher.ensure(session, append)
     expect(written).toHaveLength(2)
     expect(written[1]?.agents.map((agent) => agent.id)).toEqual(['reviewer', 'writer'])
+  })
+
+  it('rebuilds only when the workflow source changes and skips a content-preserving touch', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-xl-build-catalog-source-'))
+    try {
+      const publisher = createCatalogPublisher({ registry: registryOf([VALID]), workflowsDir: dir })
+      const session = {}
+      const written: CatalogPayload[] = []
+      const append = (catalog: CatalogPayload): void => { written.push(catalog) }
+
+      // Two calls with an unchanged directory publish once.
+      publisher.ensure(session, append)
+      publisher.ensure(session, append)
+      expect(written).toHaveLength(1)
+
+      // A real content change moves both signatures and appends again.
+      writeFileSync(join(dir, 'release.yml'), RELEASE_YAML)
+      publisher.ensure(session, append)
+      expect(written).toHaveLength(2)
+      expect(written[1]?.workflows.map((workflow) => workflow.id)).toEqual(['release'])
+
+      // A touch moves mtime without changing the document: the source signature
+      // refreshes, but the catalog content is identical and is not re-published.
+      const later = new Date(Date.now() + 10_000)
+      utimesSync(join(dir, 'release.yml'), later, later)
+      publisher.ensure(session, append)
+      expect(written).toHaveLength(2)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('tracks Sessions independently', () => {

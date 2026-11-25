@@ -6,14 +6,14 @@ The host half (agent registry with hot reload, the workflow engine, the `/workfl
 
 ## Requirements
 
-- An installed `dsh` with a profile providing `tools`, `commands`, `sessionProjections`, and `subagents` (the standard `web`/desktop profiles do).
-- Optional: Python 3, only to compile `.py` workflow definitions (the bundled `xl_build` package; the plugin reads the compiled JSON only).
+- An installed `dsh` with a profile providing `tools`, `commands`, `sessionProjections`, `subagents`, and `agentPresets` (the standard `web`/desktop profiles do). The `spawn` subagent backend backs both the shared agent runner and the registered-preset delegation tool.
+- Optional: Python 3.9+ with no third-party dependencies, only to compile `.py` workflow definitions (the bundled `xl_build` package; the plugin reads the compiled JSON only).
 - All runtime dependencies resolve from the host dsh installation; `js-yaml` is inlined into `lib/index.js` at build time.
 
 ## Install
 
 ```sh
-dsh plugin --profile web add D:\work\deepseek-harness\scratch-plugin\dsh-xl-build
+dsh plugin --profile web add <path-to-dsh-xl-build>
 ```
 
 Or manually in your profile's `package.json`:
@@ -21,7 +21,7 @@ Or manually in your profile's `package.json`:
 ```json
 {
   "dependencies": {
-    "dsh-xl-build": "link:D:\\work\\deepseek-harness\\scratch-plugin\\dsh-xl-build"
+    "dsh-xl-build": "link:<path-to-dsh-xl-build>"
   },
   "dsh": {
     "profile": {
@@ -56,6 +56,7 @@ Every field is overridable from `cordis.yml`; the schema defaults in `src/host/c
 | `memoryDir` | `.dsh/xl-build/memory` | Directory holding distilled workflow memory |
 | `memoryMaxBytes` | `16000` | Byte budget for one workflow's memory file |
 | `memoryCurator` | `memory-curator` | Agent spec id curating memory |
+| `presetIdPrefix` | `xl-` | Namespace prepended to each agent spec id when registering it as a dsh agent preset |
 | `runRootProvider` | `spawn` | LLM provider route of the dormant run-root session a `/workflow run` executes in |
 | `runRootModel` | — | Optional model id overriding the run-root session default |
 
@@ -73,7 +74,7 @@ prompt: You review diffs and report concrete defects.
 # model: deepseek-chat
 # reasoningEffort: high
 # maxTokens: 4096
-# cwd: D:\work\repo
+# cwd: /path/to/repo
 # readOnly: true           # prefix the child prompt with a read-only instruction
 # timeoutMs: 600000
 # outputSchema: { type: object }
@@ -81,9 +82,11 @@ prompt: You review diffs and report concrete defects.
 
 A file that fails validation is reported as `invalid` with its parse error and does not affect the other definitions; the directory is watched (150 ms debounce) so edits take effect without a restart. Definition files own tool/persona trimming through `agentPreset` — the spec has no `tools` or `skills` fields, because the host delegation request has no tool-filter channel. The creation flow, every field with its default, and the validation rules are documented in [agents/README.md](agents/README.md).
 
+Every valid definition (except the `memoryCurator` id) is also registered as a dsh agent preset — id `presetIdPrefix` + spec id, default `xl-reviewer` for `reviewer` — and an `xl_subagent` delegation tool (`provider: spawn`) lists exactly those ids under `agent_preset`, so the model can select a role through the built-in delegation path. The preset composition carries the YAML prompt as the child's complete system prompt and enforces `readOnly` by omitting mutating tools; fields a preset cannot express (`model`, `cwd`, `outputSchema`, `timeoutMs`, a non-`spawn` `provider`) stay on the `xl_agent_run` path and are reported at registration. The mapping table and reload semantics live in [agents/README.md](agents/README.md).
+
 ## Workflows
 
-Workflow documents live under `workflowsDir`; the `/workflow` command (`list` / `validate <file>` / `run <id> ["<single input>"] [--input k=v] [--self <nodeId>]` / `export <id> --mermaid`) drives them, the engine executes the graph with per-node state, edge payloads, joins, and loops, and settled runs are written under `runsDir` with artifacts, journal, and `dsh-resource://` links in the run board. [workflow/README.md](workflow/README.md) is the field-by-field reference: creation flow, every document/node/edge field with its default, template and condition syntax, the V1–V17 validation table, and which fields the engine does not consume yet. [doc/user-guide.md](doc/user-guide.md) covers installation, the three entry points, the Python DSL (compile with the bundled `py/xl_build` package: `python py/xl_build build <file>.py -o <out>.json`, or `python -m xl_build` with `py/` on `PYTHONPATH`; the plugin reads the compiled JSON only), memory limits of `self` nodes, the long-term memory file (read at run start, distilled by one curation activation after each settled run), and the division of labor with the built-in `workflow` tool.
+Workflow documents live under `workflowsDir`; the `/workflow` command (`list` / `validate <file>` / `run <id> ["<single input>"] [--input k=v] [--self <nodeId>]` / `export <id> --mermaid`) drives them, and the package's own `workflow/` directory ships as a built-in catalog merged under it — a valid user document with the same id shadows the shipped one, so the bundled example runs without any `workflowsDir` configuration. The engine executes the graph with per-node state, edge payloads, joins, and loops, and settled runs are written under `runsDir` with artifacts, journal, and `dsh-resource://` links in the run board. [workflow/README.md](workflow/README.md) is the field-by-field reference: creation flow, every document/node/edge field with its default, template and condition syntax, the V1–V17 validation table, and which fields the engine does not consume yet. [doc/user-guide.md](doc/user-guide.md) covers installation, the three entry points, the Python DSL (compile with the bundled `py/xl_build` package: `python py/xl_build build <file>.py -o <out>.json`, or `python -m xl_build` with `py/` on `PYTHONPATH`; the plugin reads the compiled JSON only), memory limits of `self` nodes, the long-term memory file (read at run start, distilled by one curation activation after each settled run), and the division of labor with the built-in `workflow` tool.
 
 ## Model Experience
 

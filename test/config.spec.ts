@@ -22,6 +22,7 @@ describe('Config', () => {
       memoryDir: '.dsh/xl-build/memory',
       memoryMaxBytes: 16_000,
       memoryCurator: 'memory-curator',
+      presetIdPrefix: 'xl-',
     })
   })
 

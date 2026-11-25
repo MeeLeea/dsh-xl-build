@@ -3,10 +3,11 @@
  * without a session, an agent, or a clock.
  *
  * A node is ready when every edge that must precede it has a completed source.
- * Loop-back edges belong to the loop node's round bookkeeping and failure edges
- * are started by the failure path, so neither gates readiness. A join whose
- * strategy is not `all` is gated by the engine's own join logic, so it becomes
- * ready as soon as any upstream completed.
+ * Loop-back edges belong to the loop node's round bookkeeping, so they never
+ * gate readiness. An error edge selects a recovery handler only on failure: its
+ * target is ready once a source failed and no source is still unresolved. A join
+ * whose strategy is not `all` is gated by the engine's own join logic, so it
+ * becomes ready as soon as any upstream completed.
  */
 import type { NodeStatus } from '../events.ts'
 import type { WorkflowDocument, WorkflowEdge, WorkflowNode } from './domain.ts'
@@ -34,11 +35,19 @@ function dependenciesMet(
   statuses: ReadonlyMap<string, NodeStatus>,
 ): boolean {
   const incoming = document.edges.filter((edge) => edge.to === node.id && !NON_GATING_KINDS.has(edge.kind))
-  if (incoming.length === 0) return true
-  if (node.kind === 'join' && node.strategy !== 'all') {
-    return incoming.some((edge) => statuses.get(edge.from) === 'completed')
-  }
-  return incoming.every((edge) => statuses.get(edge.from) === 'completed')
+  const gatingMet = incoming.length === 0
+    ? true
+    : node.kind === 'join' && node.strategy !== 'all'
+      ? incoming.some((edge) => statuses.get(edge.from) === 'completed')
+      : incoming.every((edge) => statuses.get(edge.from) === 'completed')
+  if (!gatingMet) return false
+  const errorSources = document.edges
+    .filter((edge) => edge.to === node.id && edge.kind === 'error')
+    .map((edge) => statuses.get(edge.from))
+  if (errorSources.length === 0) return true
+  const anyFailed = errorSources.some((status) => status === 'failed')
+  const anyPending = errorSources.some((status) => status === undefined || status === 'running')
+  return anyFailed && !anyPending
 }
 
 /**

@@ -9,7 +9,7 @@
  */
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import { mkdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AgentRunner } from '../agents/run.ts'
 import type { AgentSpec } from '../agents/spec.ts'
@@ -72,8 +72,17 @@ function memoryFile(memoryDir: string, workflowId: string): string {
 async function writeMemoryFile(memoryDir: string, workflowId: string, memory: string): Promise<void> {
   await mkdir(memoryDir, { recursive: true })
   const temp = join(memoryDir, workflowId + '.' + randomUUID() + '.tmp')
-  await writeFile(temp, memory, 'utf8')
-  await rename(temp, memoryFile(memoryDir, workflowId))
+  try {
+    await writeFile(temp, memory, 'utf8')
+    await rename(temp, memoryFile(memoryDir, workflowId))
+  } finally {
+    try {
+      await rm(temp, { force: true })
+    } catch {
+      // Best-effort temp cleanup: the write or rename failure above is the one
+      // the caller reports, and an untouched target survives either way.
+    }
+  }
 }
 
 /** Inputs for one curation pass; the curator serializes passes per workflow id. */
@@ -100,6 +109,8 @@ export interface MemoryCurator<P> {
    *   same workflow id have finished; never rejects.
    */
   curate(input: CurateMemoryInput<P>): Promise<void>
+  /** Abort the in-flight curation activation; the memory file is untouched. */
+  dispose(): void
 }
 
 /** Extract the memory string from a structured curator result; undefined when the shape mismatches. */
@@ -125,6 +136,9 @@ export function createMemoryCurator<P>(options: {
   readonly memoryMaxBytes: number
 }): MemoryCurator<P> {
   const chains = new Map<string, Promise<void>>()
+  // Owned cancellation: `dispose()` aborts whatever curation activation is in
+  // flight, so unload never waits on a model call that no longer has a consumer.
+  const abort = new AbortController()
   const runOne = async (input: CurateMemoryInput<P>): Promise<void> => {
     const emit = async (outcome: 'updated' | 'kept', fields: { bytes?: number, reason?: string }): Promise<void> => {
       await input.record({
@@ -150,7 +164,7 @@ export function createMemoryCurator<P>(options: {
       spec,
       task: `[run digest]\n${input.runDigest}\n\n[workflow memory]\n${previousMemory}`,
       parent: input.parent,
-      signal: new AbortController().signal,
+      signal: abort.signal,
       delivery: 'caller',
     })
     const result = await execution.result
@@ -187,7 +201,15 @@ export function createMemoryCurator<P>(options: {
           // untouched either way and the chain must stay alive for the next pass.
         })
       chains.set(input.workflowId, pass)
+      // Drop the settled entry only while it is still the tail: a newer pass for
+      // the same id must keep its chain, and the map must not grow per workflow.
+      void pass.then(() => {
+        if (chains.get(input.workflowId) === pass) chains.delete(input.workflowId)
+      })
       return pass
+    },
+    dispose: () => {
+      abort.abort()
     },
   }
 }

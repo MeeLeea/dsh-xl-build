@@ -60,6 +60,9 @@ const LIST_STATE = {
 
 /** Minimal session wire face: one retained session whose `xlBuild` projection is published. */
 class FakeSessions extends Service {
+  /** Live face subscription, recorded so the spec can tell reads from binding. */
+  readonly faceSubscribe = vi.fn<() => () => void>(() => () => {})
+
   constructor(ctx: Context) {
     super(ctx, 'sessions')
   }
@@ -68,12 +71,13 @@ class FakeSessions extends Service {
     session: { projections: { faceOf: (key: string) => { getSnapshot: () => unknown, subscribe: () => () => void } } }
   } | undefined {
     if (sessionId !== 'session-1') return undefined
+    const subscribe = this.faceSubscribe
     return {
       session: {
         projections: {
           faceOf: (key: string) => ({
             getSnapshot: () => (key === 'xlBuild' ? CATALOG : undefined),
-            subscribe: () => () => {},
+            subscribe,
           }),
         },
       },
@@ -232,7 +236,7 @@ it('registers the dictionaries and the @ source, and withdraws both on disposal'
 it('registers the main panel and the sidebar row, and withdraws both on disposal', async () => {
   const ctx = new Context()
   new FakeLocale(ctx)
-  new FakeSessions(ctx)
+  const sessions = new FakeSessions(ctx)
   const slots = new FakeSlots(ctx)
   new FakeInputTriggers(ctx)
   const conversation = new FakeUiConversation(ctx)
@@ -244,8 +248,13 @@ it('registers the main panel and the sidebar row, and withdraws both on disposal
     expect(panel?.options).toMatchObject({ key: 'xl-build' })
     expect(panel?.locale).toBe('xl-build')
     const face = panel?.inject?.() as XlBuildInjected
+    // getSnapshot is a pure read: it must not bind or subscribe the projection face.
     const wire = face.wire.getSnapshot()
     expect(wire.view).toEqual(CATALOG)
+    expect(sessions.faceSubscribe).not.toHaveBeenCalled()
+    const unsubscribe = face.wire.subscribe(() => {})
+    expect(sessions.faceSubscribe).toHaveBeenCalledTimes(1)
+    unsubscribe()
     const address = 'dsh-resource://file/session/session-1/artifacts/done/output.md'
     face.openArtifact(address)
     expect(sidebar.openResource).toHaveBeenCalledWith(address)

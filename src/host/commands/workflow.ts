@@ -10,7 +10,8 @@ import { resolve } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandDefinition, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { WorkflowDocument } from '../workflow/domain.ts'
-import { loadWorkflowDirectory, loadWorkflowFile } from '../workflow/loaders.ts'
+import { loadMergedWorkflowCatalog } from '../workflow/builtins.ts'
+import { loadWorkflowFile } from '../workflow/loaders.ts'
 import { toMermaid } from '../workflow/mermaid.ts'
 import { validateWorkflow } from '../workflow/validate.ts'
 import type { WorkflowRunRuntime } from '../workflow/run.ts'
@@ -186,6 +187,8 @@ function withPositionalInput(
 export interface WorkflowCommandOptions {
   /** Absolute workflows directory scanned by `list`. */
   readonly workflowsDir: string
+  /** Shipped workflow directory merged under `workflowsDir`; absent when the package ships none. */
+  readonly builtInWorkflowsDir?: string
   /** Base for a relative `validate` path; defaults to the process directory. */
   readonly cwd?: string
   /** Run executor; absent until the run milestone is wired into the host. */
@@ -193,12 +196,12 @@ export interface WorkflowCommandOptions {
 }
 
 /**
- * The saved, valid document with one id, or `undefined` when no valid file defines it.
+ * The saved, valid document with one id, or `undefined` when no valid file
+ * defines it — the user directory is scanned first, then the shipped one.
  */
-function findSavedWorkflow(workflowsDir: string, id: string): WorkflowDocument | undefined {
-  const entry = loadWorkflowDirectory(workflowsDir).find(
-    (candidate) => candidate.status === 'valid' && candidate.document.id === id,
-  )
+function findSavedWorkflow(options: WorkflowCommandOptions, id: string): WorkflowDocument | undefined {
+  const { entries } = loadMergedWorkflowCatalog(options.workflowsDir, options.builtInWorkflowsDir)
+  const entry = entries.find((candidate) => candidate.status === 'valid' && candidate.document.id === id)
   return entry?.status === 'valid' ? entry.document : undefined
 }
 
@@ -219,11 +222,13 @@ export async function runWorkflowCommand(
     case 'usage':
       return { kind: 'error', text: command.text }
     case 'list': {
-      const entries = loadWorkflowDirectory(options.workflowsDir)
+      const { entries, builtInIds } = loadMergedWorkflowCatalog(options.workflowsDir, options.builtInWorkflowsDir)
       if (entries.length === 0) return { kind: 'success', text: 'No workflows are saved.' }
-      const lines = entries.map((entry) => entry.status === 'valid'
-        ? `- ${entry.document.id}: ${entry.document.name} (${entry.document.nodes.length} nodes, ${entry.document.edges.length} edges)`
-        : `- ${entry.file}: invalid — ${entry.error}`)
+      const lines = entries.map((entry) => {
+        if (entry.status !== 'valid') return `- ${entry.file}: invalid — ${entry.error}`
+        const origin = builtInIds.has(entry.document.id) ? ' (builtin)' : ''
+        return `- ${entry.document.id}: ${entry.document.name} (${entry.document.nodes.length} nodes, ${entry.document.edges.length} edges)${origin}`
+      })
       return { kind: 'success', text: lines.join('\n') }
     }
     case 'validate': {
@@ -256,9 +261,9 @@ export async function runWorkflowCommand(
       if (initiator === undefined) {
         return { kind: 'error', text: `/${WORKFLOW_COMMAND_NAME} run needs a session to receive the completion notice.` }
       }
-      const document = findSavedWorkflow(options.workflowsDir, command.id)
+      const document = findSavedWorkflow(options, command.id)
       if (document === undefined) {
-        return { kind: 'error', text: `workflow "${command.id}" is not saved in ${options.workflowsDir}` }
+        return { kind: 'error', text: `workflow "${command.id}" is not saved in ${options.workflowsDir}${options.builtInWorkflowsDir !== undefined ? ' or shipped with the plugin' : ''}` }
       }
       const issues = validateWorkflow(document)
       if (issues.length > 0) {
@@ -271,17 +276,24 @@ export async function runWorkflowCommand(
         ? withPositionalInput(document, command.inputs, command.positionalInput)
         : { inputs: command.inputs }
       if ('error' in resolved) return { kind: 'error', text: resolved.error }
-      const { runId } = await options.runtime.startRun({
-        document,
-        inputs: resolved.inputs,
-        ...(command.selfNodeId !== undefined ? { selfNodeId: command.selfNodeId } : {}),
-      }, initiator)
+      let runId: string
+      try {
+        ({ runId } = await options.runtime.startRun({
+          document,
+          inputs: resolved.inputs,
+          ...(command.selfNodeId !== undefined ? { selfNodeId: command.selfNodeId } : {}),
+        }, initiator))
+      } catch (error) {
+        // The runtime can fail before the run exists (unknown agent, session
+        // creation, engine wiring); the handler answers, never throws.
+        return { kind: 'error', text: `starting workflow "${command.id}" failed: ${(error as Error).message}` }
+      }
       return { kind: 'success', text: `started run ${runId} for ${command.id}` }
     }
     case 'export': {
-      const document = findSavedWorkflow(options.workflowsDir, command.id)
+      const document = findSavedWorkflow(options, command.id)
       if (document === undefined) {
-        return { kind: 'error', text: `workflow "${command.id}" is not saved in ${options.workflowsDir}` }
+        return { kind: 'error', text: `workflow "${command.id}" is not saved in ${options.workflowsDir}${options.builtInWorkflowsDir !== undefined ? ' or shipped with the plugin' : ''}` }
       }
       return { kind: 'success', text: toMermaid(document) }
     }

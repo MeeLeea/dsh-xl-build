@@ -24,6 +24,12 @@ export interface GraphEdgeState {
 /** Props of the topology board. */
 export interface WorkflowGraphProps {
   readonly layout: WorkflowLayout
+  /** Localized accessible name of the topology; required so the board is never unlabeled. */
+  readonly ariaLabel: string
+  /** Per-node accessible name; falls back to the node id. */
+  readonly nodeAriaLabel?: ((node: PlacedNode, status?: GraphNodeStatus) => string) | undefined
+  /** Localized mark appended to a truncated edge label. */
+  readonly truncatedMark?: string | undefined
   /** Run status per node id. */
   readonly nodeStatuses?: Readonly<Record<string, GraphNodeStatus>>
   /** Wire state per edge id. */
@@ -66,15 +72,15 @@ const JOIN_NOTCH = 12
  * @returns the SVG element.
  */
 export function WorkflowGraph(props: WorkflowGraphProps): ReactElement {
-  const { layout, nodeStatuses, edgeStates, selectedNodeId, onSelectNode } = props
+  const { layout, ariaLabel, nodeAriaLabel, truncatedMark, nodeStatuses, edgeStates, selectedNodeId, onSelectNode } = props
   return (
     <svg
       className={styles.graph}
       width={layout.width}
       height={layout.height}
       viewBox={'0 0 ' + layout.width + ' ' + layout.height}
-      role="img"
-      aria-label="workflow topology"
+      role="group"
+      aria-label={ariaLabel}
     >
       <defs>
         <marker id="xl-edge-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
@@ -93,7 +99,7 @@ export function WorkflowGraph(props: WorkflowGraphProps): ReactElement {
         />
       ))}
       {layout.edges.map((edge) => (
-        <EdgePath key={edge.id} edge={edge} state={edgeStates?.[edge.id]} />
+        <EdgePath key={edge.id} edge={edge} state={edgeStates?.[edge.id]} truncatedMark={truncatedMark} />
       ))}
       {layout.nodes.map((node) => (
         <NodeGroup
@@ -103,6 +109,7 @@ export function WorkflowGraph(props: WorkflowGraphProps): ReactElement {
           selected={selectedNodeId === node.id}
           clickable={onSelectNode !== undefined}
           onSelect={onSelectNode}
+          nodeAriaLabel={nodeAriaLabel}
         />
       ))}
     </svg>
@@ -119,14 +126,15 @@ export function WorkflowGraph(props: WorkflowGraphProps): ReactElement {
 function EdgePath(props: {
   readonly edge: PlacedEdge
   readonly state?: GraphEdgeState | undefined
+  readonly truncatedMark?: string | undefined
 }): ReactElement {
-  const { edge, state } = props
+  const { edge, state, truncatedMark } = props
   const className = cls(styles.edge, state === undefined ? undefined : EDGE_STATUS_CLASS[state.status])
   const d = edge.kind === 'loop-back'
     ? loopBackPath(edge.fromPoint, edge.toPoint)
     : 'M' + edge.fromPoint.x + ' ' + edge.fromPoint.y + ' L' + edge.toPoint.x + ' ' + edge.toPoint.y
   const midX = (edge.fromPoint.x + edge.toPoint.x) / 2
-  const label = edgeLabel(state)
+  const label = edgeLabel(state, truncatedMark)
   const labelY = edge.kind === 'loop-back'
     ? Math.max(edge.fromPoint.y, edge.toPoint.y) + 18
     : (edge.fromPoint.y + edge.toPoint.y) / 2 - 6
@@ -144,12 +152,13 @@ function EdgePath(props: {
  * Wire label of one edge: the format alone while idle, the format and byte
  * size once transferred, and the truncation mark when the payload was cut.
  * @param state - wire state, undefined while the edge is idle.
+ * @param mark - localized truncation mark; absent leaves the size unmarked.
  * @returns the label text, or nothing when the edge has no state.
  */
-function edgeLabel(state?: GraphEdgeState | undefined): string | undefined {
+function edgeLabel(state?: GraphEdgeState | undefined, mark?: string): string | undefined {
   if (state === undefined) return undefined
   const size = state.bytes === undefined ? state.format : state.format + ' \u00b7 ' + state.bytes + 'B'
-  return state.status === 'truncated' ? size + ' [truncated]' : size
+  return state.status === 'truncated' && mark !== undefined ? size + ' ' + mark : size
 }
 
 /**
@@ -168,12 +177,16 @@ function loopBackPath(
 }
 
 /**
- * One node: its kind shape, its run-status classes, and the node id label.
+ * One node: its kind shape, its run-status classes on the group (so the shape
+ * inherits the status stroke), and the node id label. A clickable node is a
+ * real button for keyboard and assistive technology; a static node stays a
+ * plain group.
  * @param node - placed node.
  * @param status - run status, undefined while idle.
  * @param selected - whether the node is the selected one.
  * @param clickable - whether node clicks are wired.
- * @param onSelect - click handler.
+ * @param onSelect - click and key handler.
+ * @param nodeAriaLabel - accessible name builder; falls back to the node id.
  * @returns the node group element.
  */
 function NodeGroup(props: {
@@ -182,31 +195,61 @@ function NodeGroup(props: {
   readonly selected: boolean
   readonly clickable: boolean
   readonly onSelect?: ((nodeId: string) => void) | undefined
+  readonly nodeAriaLabel?: ((node: PlacedNode, status?: GraphNodeStatus) => string) | undefined
 }): ReactElement {
-  const { node, status, selected, clickable, onSelect } = props
+  const { node, status, selected, clickable, onSelect, nodeAriaLabel } = props
   const className = cls(
-    styles.node,
+    styles.nodeGroup,
     status === undefined ? styles.nodeIdle : STATUS_CLASS[status],
     selected ? styles.nodeSelected : undefined,
     clickable ? styles.nodeClickable : undefined,
   )
+  const label = nodeAriaLabel === undefined ? node.id : nodeAriaLabel(node, status)
+  if (!clickable || onSelect === undefined) {
+    return (
+      <g className={className} data-node-id={node.id}>
+        {shapeFor(node)}
+        {nodeLabel(node)}
+      </g>
+    )
+  }
   return (
     <g
       className={className}
       data-node-id={node.id}
-      onClick={onSelect === undefined ? undefined : () => onSelect(node.id)}
+      role="button"
+      tabIndex={0}
+      aria-label={label}
+      aria-pressed={selected}
+      onClick={() => onSelect(node.id)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return
+        if (event.key === ' ') event.preventDefault()
+        onSelect(node.id)
+      }}
     >
       {shapeFor(node)}
-      <text
-        className={styles.nodeLabel}
-        x={node.x + node.width / 2}
-        y={node.y + node.height / 2}
-        textAnchor="middle"
-        dominantBaseline="central"
-      >
-        {node.id}
-      </text>
+      {nodeLabel(node)}
     </g>
+  )
+}
+
+/**
+ * The visible node id label centered in the node box.
+ * @param node - placed node.
+ * @returns the label text element.
+ */
+function nodeLabel(node: PlacedNode): ReactElement {
+  return (
+    <text
+      className={styles.nodeLabel}
+      x={node.x + node.width / 2}
+      y={node.y + node.height / 2}
+      textAnchor="middle"
+      dominantBaseline="central"
+    >
+      {node.id}
+    </text>
   )
 }
 
@@ -222,36 +265,36 @@ function shapeFor(node: PlacedNode): ReactElement {
   const { x, y, width: w, height: h } = node
   switch (node.kind) {
     case 'input':
-      return <rect className={cls(styles.node)} x={x} y={y} width={w} height={h} rx={h / 2} />
+      return <rect x={x} y={y} width={w} height={h} rx={h / 2} />
     case 'output':
       return (
         <>
-          <rect className={cls(styles.node)} x={x} y={y} width={w} height={h} rx={8} />
-          <rect className={cls(styles.outputInner)} x={x + 4} y={y + 4} width={w - 8} height={h - 8} rx={5} />
+          <rect x={x} y={y} width={w} height={h} rx={8} />
+          <rect className={styles.outputInner} x={x + 4} y={y + 4} width={w - 8} height={h - 8} rx={5} />
         </>
       )
     case 'router': {
       const points = (x + w / 2) + ',' + y + ' ' + (x + w) + ',' + (y + h / 2) + ' '
         + (x + w / 2) + ',' + (y + h) + ' ' + x + ',' + (y + h / 2)
-      return <polygon className={cls(styles.node)} points={points} />
+      return <polygon points={points} />
     }
     case 'loop':
-      return <rect className={cls(styles.node, styles.loop)} x={x} y={y} width={w} height={h} rx={8} />
+      return <rect className={styles.loop} x={x} y={y} width={w} height={h} rx={8} />
     case 'note':
-      return <rect className={cls(styles.node, styles.note)} x={x} y={y} width={w} height={h} rx={4} />
+      return <rect className={styles.note} x={x} y={y} width={w} height={h} rx={4} />
     case 'join': {
       const points = x + ',' + y + ' ' + (x + w) + ',' + y + ' ' + (x + w) + ',' + (y + h) + ' '
         + x + ',' + (y + h) + ' ' + (x + JOIN_NOTCH) + ',' + (y + h / 2)
-      return <polygon className={cls(styles.node)} points={points} />
+      return <polygon points={points} />
     }
     case 'subworkflow':
       return (
         <>
-          <rect className={cls(styles.node)} x={x} y={y} width={w} height={h} rx={8} />
-          <line className={cls(styles.subMarker)} x1={x + 5} y1={y + 6} x2={x + 5} y2={y + h - 6} />
+          <rect x={x} y={y} width={w} height={h} rx={8} />
+          <line className={styles.subMarker} x1={x + 5} y1={y + 6} x2={x + 5} y2={y + h - 6} />
         </>
       )
     default:
-      return <rect className={cls(styles.node)} x={x} y={y} width={w} height={h} rx={8} />
+      return <rect x={x} y={y} width={w} height={h} rx={8} />
   }
 }

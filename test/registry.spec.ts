@@ -116,4 +116,23 @@ describe('agent registry', () => {
     await new Promise((resolve) => setTimeout(resolve, 400))
     expect(registry.resolveAgent('late')).toBeUndefined()
   })
+
+  it('notifies onChange listeners on reload and stops after removal', async () => {
+    const dir = createAgentsDir()
+    const { scope } = createScope()
+    const registry = createAgentRegistry(scope, { agentsDir: dir })
+    let changes = 0
+    const stop = registry.onChange(() => {
+      changes += 1
+    })
+
+    writeFileSync(join(dir, 'reviewer.yml'), `id: reviewer\nname: Reviewer\ndescription: Reviews.\nprompt: You review.\n`)
+    await waitFor(() => changes > 0)
+
+    stop()
+    const afterRemoval = changes
+    writeFileSync(join(dir, 'reviewer.yml'), `id: reviewer\nname: Reviewer v2\ndescription: Reviews.\nprompt: You review.\n`)
+    await waitFor(() => registry.resolveAgent('reviewer')?.name === 'Reviewer v2')
+    expect(changes).toBe(afterRemoval)
+  })
 })

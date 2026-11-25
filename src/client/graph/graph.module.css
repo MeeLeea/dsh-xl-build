@@ -5,6 +5,8 @@
 
 .graph {
   display: block;
+  max-width: 100%;
+  height: auto;
 }
 
 /* Loop body rectangle: a dashed frame around the body nodes. */
@@ -20,6 +22,10 @@
   stroke-width: 1.5;
 }
 
+.edgeIdle {
+  stroke: var(--dsw-alias-border-l3);
+}
+
 .edgeTransferred {
   stroke: var(--dsw-alias-state-success-primary);
 }
@@ -30,6 +36,8 @@
 }
 
 .edgeArrow {
+  /* Engines without context-stroke keep the fallback border tone. */
+  fill: var(--dsw-alias-border-l3);
   fill: context-stroke;
 }
 
@@ -39,7 +47,9 @@
   font-size: 10px;
 }
 
-.node {
+/* Base paint of one node; the group owns it so the status stroke cascades to
+   the kind shape instead of being overridden by the shape's own paint. */
+.nodeGroup {
   fill: var(--dsw-alias-bg-l2);
   stroke: var(--dsw-alias-border-l2);
   stroke-width: 1;
@@ -77,6 +87,15 @@
 
 .nodeSelected {
   stroke-width: 2.5;
+}
+
+.nodeGroup:focus-visible {
+  outline: 2px solid var(--dsw-alias-brand-primary);
+  outline-offset: 2px;
+}
+
+.nodeGroup:focus-visible .nodeLabel {
+  text-decoration: underline;
 }
 
 .nodeLabel {

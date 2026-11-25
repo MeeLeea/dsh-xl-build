@@ -34,11 +34,21 @@ export interface AgentRegistry {
   listAgents(): readonly AgentRegistryEntry[]
   /** Resolve one agent by id against the current snapshot. */
   resolveAgent(id: string): AgentSpec | undefined
+  /**
+   * Observe snapshot reloads: the listener runs after each reload that
+   * replaces the entries. The returned disposer removes the listener.
+   */
+  onChange(listener: () => void): () => void
 }
 
 /** The part of a Cordis context the registry registers its effects on. */
 export interface EffectScope {
   effect(callback: () => () => void): unknown
+}
+
+/** Render an unknown thrown value as a readable message. */
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
 }
 
 /** Format zod issues as `path: message` pairs for a readable file error. */
@@ -145,12 +155,16 @@ export function loadAgentDirectory(dir: string): AgentRegistryEntry[] {
  * @param config - the plugin configuration slice holding `agentsDir`.
  * @param builtIn - the shipped built-in directory, when present. A broken
  *   built-in file throws here: it is a packaging bug, not user data.
+ * @param onError - sink for a reload or watcher failure; a failed reload keeps
+ *   the previous entries and notifies no listener. The initial load stays
+ *   fail-loud and runs during plugin load.
  * @returns the registry backed by an initially loaded snapshot.
  */
 export function createAgentRegistry(
   scope: EffectScope,
   config: Pick<Config, 'agentsDir'>,
   builtIn?: { readonly dir: string },
+  onError?: (message: string) => void,
 ): AgentRegistry {
   const dir = resolve(process.cwd(), config.agentsDir)
   mkdirSync(dir, { recursive: true })
@@ -162,9 +176,21 @@ export function createAgentRegistry(
     return loaded
   })()
   let entries = mergeBuiltIn(loadAgentDirectory(dir), builtInEntries)
+  const listeners = new Set<() => void>()
   let timer: ReturnType<typeof setTimeout> | undefined
   const reload = (): void => {
-    entries = mergeBuiltIn(loadAgentDirectory(dir), builtInEntries)
+    let next: AgentRegistryEntry[]
+    try {
+      next = mergeBuiltIn(loadAgentDirectory(dir), builtInEntries)
+    } catch (error) {
+      // Reload runs from a debounce timer and a watcher error handler, so a
+      // rethrow here would escape as an uncaught exception. Keep the previous
+      // snapshot, report the failure, and leave listeners un-notified.
+      onError?.(`agent directory reload failed: ${describe(error)}`)
+      return
+    }
+    entries = next
+    for (const listener of listeners) listener()
   }
   const schedule = (): void => {
     if (timer !== undefined) clearTimeout(timer)
@@ -176,7 +202,10 @@ export function createAgentRegistry(
 
   scope.effect(() => {
     const watcher = watch(dir, { persistent: false }, schedule)
-    watcher.on('error', reload)
+    watcher.on('error', (error) => {
+      onError?.(`agent directory watcher failed: ${describe(error)}`)
+      reload()
+    })
     return () => {
       if (timer !== undefined) {
         clearTimeout(timer)
@@ -191,6 +220,12 @@ export function createAgentRegistry(
     resolveAgent: (id) => {
       const entry = entries.find((candidate) => candidate.status === 'valid' && candidate.spec.id === id)
       return entry?.status === 'valid' ? entry.spec : undefined
+    },
+    onChange: (listener) => {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
     },
   }
 }

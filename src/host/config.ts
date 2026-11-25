@@ -55,6 +55,12 @@ export interface Config {
   runRootProvider: string
   /** Optional model id overriding the run-root session's provider default. */
   runRootModel?: string
+  /**
+   * Namespace prepended to each agent spec id to form the registered dsh agent
+   * preset id (`xl-reviewer` for the default). Preset ids are process-global,
+   * so the prefix isolates this plugin's registrations from other presets.
+   */
+  presetIdPrefix: string
 }
 
 export const Config: Schema<Config> = Schema.object({
@@ -77,4 +83,5 @@ export const Config: Schema<Config> = Schema.object({
   memoryCurator: Schema.string().default('memory-curator'),
   runRootProvider: Schema.string().default('spawn'),
   runRootModel: Schema.string(),
+  presetIdPrefix: Schema.string().default('xl-'),
 })

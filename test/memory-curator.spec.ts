@@ -182,6 +182,45 @@ describe('memory curation', () => {
     ])
   })
 
+  it('aborts the in-flight curation activation on dispose', async () => {
+    const dir = newCaseDir()
+    const started: AgentRunInput<Agent>[] = []
+    let release: (result: SubagentResult) => void = () => {}
+    const pending = new Promise<SubagentResult>((resolve) => { release = resolve })
+    const runner: AgentRunner<Agent> = {
+      start: async (input) => {
+        started.push(input)
+        return { childId: 'child-0', result: pending }
+      },
+      disposeAll: async () => {},
+    }
+    const curator = createMemoryCurator<Agent>({
+      runner,
+      curatorId: 'memory-curator',
+      memoryDir: dir,
+      memoryEnabled: true,
+      memoryMaxBytes: 4000,
+    })
+    const pass = curator.curate({
+      runId: 'run-1',
+      workflowId: 'wf-1',
+      runDigest: 'd',
+      parent: { id: SessionId('curator-parent') } as Agent,
+      record: async () => {},
+      resolveCurator: () => CURATOR_SPEC,
+    })
+    await settle()
+    expect(started).toHaveLength(1)
+    // The curator owns the signal it hands the runner.
+    expect(started[0]?.signal.aborted).toBe(false)
+
+    curator.dispose()
+    expect(started[0]?.signal.aborted).toBe(true)
+
+    release(completedStructured('after dispose'))
+    await pass
+  })
+
   it('does nothing when memory is disabled', async () => {
     const dir = newCaseDir()
     const started: AgentRunInput<Agent>[] = []

@@ -67,7 +67,7 @@ describe('planReadyNodes', () => {
     expect(ready(nodes, FAN_EDGES, { start: 'completed', aa: 'completed' })).toContain('merge')
   })
 
-  it('ignores loop-back and error edges when gating', () => {
+  it('ignores loop-back edges when gating', () => {
     // `aa` is gated only by the loop-back edge, so it must be ready while its
     // successor waits for `aa` to complete.
     expect(ready([
@@ -84,11 +84,20 @@ describe('planReadyNodes', () => {
       { id: 'e1', from: 'aa', to: 'bb', kind: 'flow' },
       { id: 'e2', from: 'bb', to: 'aa', kind: 'loop-back' },
     ], { aa: 'completed' }, 8, [], 'aa')).toEqual(['bb'])
+  })
 
-    expect(ready([
+  it('gates an error target on source failure only', () => {
+    // Corrected semantic: an error edge activates only on failure, so the target
+    // waits while its source is unstarted/running and never starts after success.
+    const nodes = [
       { kind: 'agent', id: 'aa', agent: 'reviewer', task: 'aa' },
       { kind: 'agent', id: 'bb', agent: 'reviewer', task: 'bb' },
-    ], [{ id: 'e1', from: 'aa', to: 'bb', kind: 'error' }], {}, 8, [], 'aa')).toEqual(['aa', 'bb'])
+    ]
+    const edges = [{ id: 'e1', from: 'aa', to: 'bb', kind: 'error' }]
+    expect(ready(nodes, edges, {}, 8, [], 'aa')).toEqual(['aa'])
+    expect(ready(nodes, edges, { aa: 'running' }, 8, [], 'aa')).toEqual([])
+    expect(ready(nodes, edges, { aa: 'completed' }, 8, [], 'aa')).toEqual([])
+    expect(ready(nodes, edges, { aa: 'failed' }, 8, [], 'aa')).toEqual(['bb'])
   })
 
   it('respects the concurrency budget and never re-plans running nodes', () => {

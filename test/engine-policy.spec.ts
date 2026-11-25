@@ -55,6 +55,65 @@ describe('cascadeSkips', () => {
   })
 })
 
+describe('cascadeSkips: joins and error edges', () => {
+  /** A diamond whose join strategy is configurable. */
+  function fanOf(strategy: string, quorum?: number) {
+    return docOf([
+      { kind: 'input', id: 'start' },
+      { kind: 'agent', id: 'aa', agent: 'reviewer', task: 'aa' },
+      { kind: 'agent', id: 'bb', agent: 'reviewer', task: 'bb' },
+      { kind: 'join', id: 'merge', strategy, ...quorum === undefined ? {} : { quorum } },
+      { kind: 'output', id: 'done', value: 'x' },
+    ], [
+      { id: 'e1', from: 'start', to: 'aa', kind: 'fan-out' },
+      { id: 'e2', from: 'start', to: 'bb', kind: 'fan-out' },
+      { id: 'e3', from: 'aa', to: 'merge', kind: 'fan-in' },
+      { id: 'e4', from: 'bb', to: 'merge', kind: 'fan-in' },
+      { id: 'e5', from: 'merge', to: 'done', kind: 'flow' },
+    ])
+  }
+
+  it('keeps a non-all join while enough upstreams can still arrive', () => {
+    // Corrected semantic: `any`/`quorum` joins survive one blocking upstream.
+    const anyJoin = cascadeSkips(fanOf('any'), new Map<string, NodeStatus>([
+      ['start', 'completed'],
+      ['aa', 'failed'],
+    ]))
+    expect(anyJoin.has('merge')).toBe(false)
+
+    const quorumJoin = cascadeSkips(fanOf('quorum', 1), new Map<string, NodeStatus>([
+      ['start', 'completed'],
+      ['aa', 'failed'],
+    ]))
+    expect(quorumJoin.has('merge')).toBe(false)
+  })
+
+  it('still skips an all join blocked by one upstream', () => {
+    const allJoin = cascadeSkips(fanOf('all'), new Map<string, NodeStatus>([
+      ['start', 'completed'],
+      ['aa', 'failed'],
+    ]))
+    expect(allJoin.get('merge')).toBe('skipped')
+  })
+
+  it('skips an error handler only when no source failed', () => {
+    // Corrected semantic: an error edge activates on failure, so a handler whose
+    // sources all settled without failing is skipped instead of waiting forever.
+    const errorGraph = docOf([
+      { kind: 'agent', id: 'aa', agent: 'reviewer', task: 'aa' },
+      { kind: 'agent', id: 'handler', agent: 'reviewer', task: 'handler' },
+      { kind: 'output', id: 'done', value: 'x' },
+    ], [
+      { id: 'e1', from: 'aa', to: 'handler', kind: 'error' },
+      { id: 'e2', from: 'aa', to: 'done', kind: 'flow' },
+      { id: 'e3', from: 'handler', to: 'done', kind: 'flow' },
+    ], 'aa')
+
+    expect(cascadeSkips(errorGraph, new Map<string, NodeStatus>([['aa', 'completed']])).get('handler')).toBe('skipped')
+    expect(cascadeSkips(errorGraph, new Map<string, NodeStatus>([['aa', 'failed']])).has('handler')).toBe(false)
+  })
+})
+
 describe('settleRun', () => {
   it('is not settled while a node is running or unstarted', () => {
     expect(settleRun(CHAIN, new Map())).toEqual({ settled: false })

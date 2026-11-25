@@ -8,7 +8,9 @@ import { zh, type XlBuildKey } from '../src/client/locales.ts'
 import { NodeDetail } from '../src/client/panel/NodeDetail.tsx'
 import type { XlBuildNodeView } from '../src/client/wire.ts'
 
-const t = (key: XlBuildKey): string => zh[key]
+/** Translate stub resolving `{name}` params from the zh dictionary. */
+const t = (key: XlBuildKey, params?: Record<string, unknown>): string =>
+  zh[key].replace(/\{(\w+)\}/g, (_all, name: string) => String(params?.[name] ?? '{' + name + '}'))
 
 const failed: XlBuildNodeView = {
   nodeId: 'research',
@@ -46,13 +48,15 @@ const completed: XlBuildNodeView = {
 }
 
 describe('NodeDetail', () => {
-  it('a failed node shows the error class, the attempt count, previews, and node artifacts', () => {
+  it('a failed node shows the error class, the localized status, and node artifacts', () => {
     const markup = renderToStaticMarkup(<NodeDetail node={failed} t={t} />)
     expect(markup).toContain('deterministic')
     expect(markup).toContain('provider boom')
     expect(markup).toContain('2')
     expect(markup).toContain('Research the release notes')
-    expect(markup).toContain('[truncated]')
+    expect(markup).toContain(zh['runStatus.failed'])
+    expect(markup).toContain(zh.truncatedMark)
+    expect(markup).toContain(zh.byteSize.replace('{bytes}', '120'))
     expect(markup).toContain('report.md')
     expect(markup).not.toContain('dsh-resource://')
     expect(markup).toContain(zh.detailArtifacts)
@@ -63,6 +67,7 @@ describe('NodeDetail', () => {
     expect(markup).not.toContain('deterministic')
     expect(markup).not.toContain(zh.detailArtifacts)
     expect(markup).toContain('Release notes body')
-    expect(markup).toContain('320ms')
+    expect(markup).toContain(zh['runStatus.completed'])
+    expect(markup).toContain(zh.durationValue.replace('{ms}', '320'))
   })
 })

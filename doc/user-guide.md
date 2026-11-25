@@ -4,10 +4,10 @@
 
 ## 安装
 
-前置要求：已安装的 `dsh`（profile 提供 `tools`、`commands`、`sessionProjections`、`subagents` 注入，标准 `web`/desktop profile 均满足）；编译 Python DSL 需要 Python 3（可选，只用 JSON/YAML 时不需要）。
+前置要求：已安装的 `dsh`（profile 提供 `tools`、`commands`、`sessionProjections`、`subagents` 注入，标准 `web`/desktop profile 均满足）；编译 Python DSL 需要 Python 3.9+（可选；无第三方依赖；只用 JSON/YAML 时不需要）。
 
 ```sh
-dsh plugin --profile web add D:\work\deepseek-harness\scratch-plugin\dsh-xl-build
+dsh plugin --profile web add <path-to-dsh-xl-build>
 ```
 
 或在 profile 的 `package.json` 手工声明依赖后重启：
@@ -15,7 +15,7 @@ dsh plugin --profile web add D:\work\deepseek-harness\scratch-plugin\dsh-xl-buil
 ```json
 {
   "dependencies": {
-    "dsh-xl-build": "link:D:\\work\\deepseek-harness\\scratch-plugin\\dsh-xl-build"
+    "dsh-xl-build": "link:<path-to-dsh-xl-build>"
   },
   "dsh": {
     "profile": {
@@ -25,7 +25,7 @@ dsh plugin --profile web add D:\work\deepseek-harness\scratch-plugin\dsh-xl-buil
 }
 ```
 
-安装后重启 `dsh web`，输入 `/workflow list` 应回答 `No workflows are saved.`（而非报错），会话侧栏出现运行看板。源码方式开发时，在插件目录执行 `npm install && npm run build` 构建（本次施工已实际执行并通过全部测试）。
+安装后重启 `dsh web`，输入 `/workflow list` 应回答 `No workflows are saved.`（而非报错），会话侧栏出现运行看板。源码方式开发时，在插件目录执行 `npm install && npm run build` 构建。
 
 ## 三种入口
 
@@ -48,7 +48,7 @@ dsh plugin --profile web add D:\work\deepseek-harness\scratch-plugin\dsh-xl-buil
 
 ## 工作流定义
 
-定义放在 `workflowsDir`（默认 `workflows/`，相对 dsh 进程工作目录），支持 `.json`、`.yml`、`.yaml`；`run <id>`/`export <id>` 按文档里的 `id` 字段匹配，与文件名无关。schemaVersion 门（[plan.md](plan.md) §6.7）：缺失版本直接拒绝并提示补 `"schemaVersion": 1`；高于本插件支持的版本拒绝并说明原因；低于时逐版本 `migrate()` 升级。
+定义放在 `workflowsDir`（默认 `workflows/`，相对 dsh 进程工作目录），支持 `.json`、`.yml`、`.yaml`；`run <id>`/`export <id>` 按文档里的 `id` 字段匹配，与文件名无关。包内 `workflow/` 目录随包作为**内置目录**参与解析：用户目录优先（同 id 的有效文档覆盖内置文档），内置条目在 `list` 输出里带 `(builtin)` 标记；内置文件损坏视为打包错误，插件加载直接失败。schemaVersion 门（[plan.md](plan.md) §6.7）：缺失版本直接拒绝并提示补 `"schemaVersion": 1`；高于本插件支持的版本拒绝并说明原因；低于时逐版本 `migrate()` 升级。
 
 完整示例（与 [test/fixtures/release-demo.json](../test/fixtures/release-demo.json) 逐字一致，该文件被测试套件实际加载与校验）：
 
@@ -84,7 +84,7 @@ dsh plugin --profile web add D:\work\deepseek-harness\scratch-plugin\dsh-xl-buil
 python py/xl_build build test/fixtures/py-chain.py -o tmp.json
 ```
 
-等价形式：把 `py/` 加入 `PYTHONPATH` 后可用 `python -m xl_build build ...`（插件内部的加载器即此调用）。本次施工已在插件目录实际执行上面这条命令（产物通过 `npm run test:spec -- loaders` 的加载校验；无 Python 时该测试自跳过）。DSL 覆盖全部节点种类，链式调用：
+等价形式：把 `py/` 加入 `PYTHONPATH` 后可用 `python -m xl_build build ...`（插件内部的加载器即此调用；无 Python 时该加载校验测试自跳过）。DSL 覆盖全部节点种类，链式调用：
 
 ```python
 from xl_build import Workflow
@@ -138,6 +138,7 @@ workflow.edge("start", "research")
 | `memoryDir` | `.dsh/xl-build/memory` | 记忆文件目录，每个工作流一个 `<id>.md` |
 | `memoryMaxBytes` | `16000` | 单个工作流记忆文件的字节上限（读截断与写门槛共用） |
 | `memoryCurator` | `memory-curator` | 策展记忆的 agent spec id（内置定义，同名用户定义优先） |
+| `presetIdPrefix` | `xl-` | 把每个 agent spec id 注册为 dsh agent preset 时前置的命名空间 |
 | `runRootProvider` | `spawn` | `/workflow run` 休眠根会话的 provider |
 | `runRootModel` | （provider 默认） | 覆盖根会话的模型 id |
 

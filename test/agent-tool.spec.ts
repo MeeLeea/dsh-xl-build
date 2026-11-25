@@ -51,15 +51,19 @@ function stubPort() {
 }
 
 describe('prompt and option mapping', () => {
-  it('prefixes the read-only declaration when the spec asks for it', () => {
+  it('prefixes the read-only declaration onto the role prompt and keeps the task as its own block', () => {
     const blocks = buildPromptBlocks(SPEC, 'Review this diff.')
-    expect(blocks).toHaveLength(1)
-    expect(blocks[0]).toEqual({ type: 'text', text: `${READ_ONLY_PREFIX}\n\nReview this diff.` })
+    expect(blocks).toHaveLength(2)
+    expect(blocks[0]).toEqual({ type: 'text', text: `${READ_ONLY_PREFIX}\n\n${SPEC.prompt}` })
+    expect(blocks[1]).toEqual({ type: 'text', text: 'Review this diff.' })
   })
 
-  it('sends the bare task when readOnly is off', () => {
+  it('delivers the bare role prompt and the task when readOnly is off', () => {
     const spec = AgentSpecSchema.parse({ ...SPEC, readOnly: false })
-    expect(buildPromptBlocks(spec, 'Review this diff.')).toEqual([{ type: 'text', text: 'Review this diff.' }])
+    expect(buildPromptBlocks(spec, 'Review this diff.')).toEqual([
+      { type: 'text', text: 'You review diffs.' },
+      { type: 'text', text: 'Review this diff.' },
+    ])
   })
 
   it('maps only model, reasoning effort, and max tokens onto agent options', () => {

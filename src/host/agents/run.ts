@@ -78,15 +78,21 @@ export interface AgentRunner<P> {
 }
 
 /**
- * Build the prompt blocks delivered to the child: the read-only declaration
- * first when the spec asks for it, then the task.
+ * Build the prompt blocks delivered to the child: the role prompt first (with
+ * the read-only declaration prefixed when the spec asks for it), then the
+ * task. `SubagentStartRequest` has no system-prompt channel, so the role
+ * prompt travels inside the user message; only the preset path reaches
+ * system-prompt level.
  * @param spec - the agent definition.
  * @param task - the task text supplied by the caller.
  * @returns the child's user message content.
  */
 export function buildPromptBlocks(spec: AgentSpec, task: string): SubagentStartRequest['prompt'] {
-  const text = spec.readOnly ? `${READ_ONLY_PREFIX}\n\n${task}` : task
-  return [{ type: 'text', text }]
+  const role = spec.readOnly ? `${READ_ONLY_PREFIX}\n\n${spec.prompt}` : spec.prompt
+  return [
+    { type: 'text', text: role },
+    { type: 'text', text: task },
+  ]
 }
 
 /**
