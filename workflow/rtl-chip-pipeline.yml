@@ -1,0 +1,182 @@
+schemaVersion: 1
+id: rtl-chip-pipeline
+name: RTL chip pipeline
+description: >-
+  architect 产出架构规格 → reviewer 只读评审 → 循环 [rtl-designer → rtl-verification → Vivado 仿真]，
+  仿真未通过则回到 rtl-designer 修正，最多 3 轮。运行前请在 profile 的 cordis.yml 中把
+  scriptTimeoutMs 提到 ≥900000（Vivado 批处理 3-10 分钟，默认 120000 会提前杀掉），
+  runTimeoutMs 提到 ≥5400000（多轮 agent + 仿真），并在项目根目录（即 dsh 进程工作目录）启动，
+  使 agent 的相对路径与 script 节点的工作目录一致。
+entry: start
+nodes:
+  - id: start
+    kind: input
+    params:
+      - { name: requirement, required: true }
+
+  - id: architect
+    kind: agent
+    agent: architect
+    task: |
+      完成芯片架构方案设计，输出可直接交付 RTL 的规格文档 doc/arch_spec.md，并在正文给出架构 Spec、
+      接口 Spec、寄存器规格、时钟/复位/电源域约束与风险点。这是 workflow 的一次节点调用：不要调用
+      xl_agent_run 派发子任务。
+      项目需求：{{input.requirement}}
+    context: { from: memory }
+
+  - id: reviewer
+    kind: agent
+    agent: reviewer
+    task: |
+      只读评审以下架构规格，按严重度（阻塞 / 重要 / 建议）列出缺陷与具体修改建议；没有缺陷就明确说明，
+      不要编造 nitpick。这是 workflow 的一次节点调用：不要修改任何文件。
+      项目需求：{{input.requirement}}
+      架构规格：
+      {{nodes.architect}}
+
+  - id: fix-loop
+    kind: loop
+    body: rtl-designer
+    until:
+      expr: '{"in": ["SIM_RESULT: PASS", {"var": "nodes.sim-run"}]}'
+    maxIters: 3
+    onMaxIters: stop
+    carry: [sim-feedback]
+    emit: [sim-feedback]
+
+  - id: rtl-designer
+    kind: agent
+    agent: rtl-designer
+    task: |
+      按架构规格与评审意见完成 RTL 规格梳理与可综合 SystemVerilog 编码，交付 scripts/syn_filelist.f
+      与 src/<module>.v，并跑编译检查。这是 workflow 的一次节点调用：不要调用 xl_agent_run 派发子任务。
+      项目需求：{{input.requirement}}
+      架构规格见 doc/arch_spec.md。若上下文附有「上一轮仿真结论 / 验证报告」，说明这是修正轮：先读取
+      reports/*_simulate.log 与 logs/ 下的日志定位失败原因，只修正失败部分后重新交付，并在正文说明本轮改动。
+    context: { lastMessages: 1 }
+
+  - id: rtl-verification
+    kind: agent
+    agent: rtl-verification
+    task: |
+      针对本轮 RTL 交付完成验证计划、Testbench/UVM、scripts/sim_filelist.f、scripts/start.tcl 与
+      scripts/run_one.tcl，并实际跑通 Vivado Xsim。这是 workflow 的一次节点调用：不要调用 xl_agent_run
+      派发子任务。
+      项目需求：{{input.requirement}}
+      架构规格见 doc/arch_spec.md。
+      本轮 RTL 设计与交付：
+      {{nodes.rtl-designer}}
+
+  - id: sim-run
+    kind: script
+    runtime: shell
+    script: |
+      $ErrorActionPreference = 'Continue'
+      $vivado = 'D:\AMDTools\2025.2\Vivado\bin\vivado.bat'
+      $logDir = Join-Path (Get-Location) 'reports'
+      $result = 'FAIL'
+      $reason = ''
+      New-Item -ItemType Directory -Force -Path 'logs' | Out-Null
+
+      if (-not (Test-Path $vivado)) {
+        $reason = "Vivado 不存在: $vivado"
+      } elseif (-not (Test-Path 'scripts/start.tcl')) {
+        $reason = '缺少 scripts/start.tcl（应由 rtl-verification 生成）'
+      } else {
+        & $vivado -mode batch -source scripts/start.tcl *> 'logs/vivado_batch.log'
+        $code = $LASTEXITCODE
+        if ($code -ne 0) {
+          $reason = "vivado 退出码 $code"
+        } else {
+          $logs = @(Get-ChildItem -Path $logDir -Filter '*_simulate.log' -File -ErrorAction SilentlyContinue)
+          if ($logs.Count -eq 0) {
+            $reason = '未产生 *_simulate.log 仿真日志'
+          } else {
+            $bad = @($logs | Where-Object {
+              (Get-Content -LiteralPath $_.FullName -Raw -ErrorAction SilentlyContinue) -match 'SOME TESTS FAILED|\[ERROR\]'
+            })
+            if ($bad.Count -gt 0) {
+              $reason = '仿真日志含失败标记: ' + (($bad | ForEach-Object { $_.Name }) -join ', ')
+            } else {
+              $result = 'PASS'
+            }
+          }
+        }
+      }
+
+      Write-Output "SIM_RESULT: $result"
+      if ($result -ne 'PASS') {
+        Write-Output "SIM_REASON: $reason"
+        if (Test-Path 'logs/vivado_batch.log') {
+          Write-Output '--- logs/vivado_batch.log (tail) ---'
+          Get-Content 'logs/vivado_batch.log' -Tail 80 -ErrorAction SilentlyContinue
+        }
+        Get-ChildItem -Path $logDir -Filter '*_simulate.log' -File -ErrorAction SilentlyContinue | ForEach-Object {
+          Write-Output "--- $($_.Name) (tail) ---"
+          Get-Content -LiteralPath $_.FullName -Tail 80 -ErrorAction SilentlyContinue
+        }
+      }
+      exit 0
+
+  - id: sim-router
+    kind: router
+    branches:
+      - when: '{"in": ["SIM_RESULT: PASS", {"var": "nodes.fix-loop"}]}'
+        to: done
+    else: report-fail
+
+  - id: done
+    kind: output
+    value: |
+      # RTL 芯片交付结果（仿真通过）
+      ## 架构规格
+      {{nodes.architect}}
+      ## 架构评审
+      {{nodes.reviewer}}
+      ## 最终仿真结论
+      {{nodes.fix-loop}}
+
+  - id: report-fail
+    kind: output
+    value: |
+      # RTL 芯片交付结果（仿真未通过，已达最大修正轮次）
+      {{nodes.fix-loop}}
+      请查看 reports/*_simulate.log 与 logs/vivado_batch.log 定位失败原因，再人工介入或重新运行。
+edges:
+  - { id: start-to-architect, from: start, to: architect, kind: flow }
+  - { id: architect-to-reviewer, from: architect, to: reviewer, kind: flow }
+  - id: reviewer-to-loop
+    from: reviewer
+    to: fix-loop
+    kind: flow
+    template: |
+      【架构评审意见】
+      {{nodes.reviewer}}
+
+      【架构规格】
+      {{nodes.architect}}
+  - { id: loop-to-designer, from: fix-loop, to: rtl-designer, kind: flow }
+  - { id: designer-to-verification, from: rtl-designer, to: rtl-verification, kind: flow }
+  - { id: verification-to-sim, from: rtl-verification, to: sim-run, kind: flow }
+  - id: sim-feedback
+    from: sim-run
+    to: fix-loop
+    kind: loop-back
+    template: |
+      【上一轮仿真结论】
+      {{nodes.sim-run}}
+
+      【上一轮验证报告】
+      {{nodes.rtl-verification}}
+  - { id: loop-to-router, from: fix-loop, to: sim-router, kind: flow }
+  - id: router-to-done
+    from: sim-router
+    to: done
+    kind: branch
+    condition: '{"in": ["SIM_RESULT: PASS", {"var": "nodes.fix-loop"}]}'
+  - { id: router-to-fail, from: sim-router, to: report-fail, kind: branch }
+outputs:
+  report: |
+    {{nodes.done}}
+    {{nodes.report-fail}}
+  simulation: "{{nodes.fix-loop}}"
