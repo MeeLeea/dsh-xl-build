@@ -66,7 +66,6 @@ function configFor(workdir: string): Config {
     memoryDir: join(workdir, 'memory'),
     memoryMaxBytes: 16_000,
     memoryCurator: 'memory-curator',
-    runRootProvider: 'spawn',
   }
 }
 

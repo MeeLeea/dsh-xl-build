@@ -114,7 +114,7 @@
 .memberMeta {
   flex: none;
   color: var(--dsw-alias-label-tertiary);
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   font-size: 11px;
   line-height: 16px;
 }

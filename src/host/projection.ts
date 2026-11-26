@@ -270,8 +270,11 @@ function applyRunRecord(state: XlBuildProjectionState, type: string, event: XlBu
     case XL_EVENTS.nodeDelta: {
       const parsed = NodeDeltaRecordSchema.safeParse(event.data)
       if (!parsed.success) return state
+      // A delta record is a full snapshot, not an append chunk: the preview
+      // always mirrors the node's newest state (live stats while running,
+      // final output once completed).
       return withRun(state, parsed.data.runId, (run) => withNode(run, parsed.data.nodeId, (node) => (
-        { ...node, delta: node.delta + parsed.data.text }
+        node.delta === parsed.data.text ? node : { ...node, delta: parsed.data.text }
       )))
     }
     case XL_EVENTS.edgeTransfer: {

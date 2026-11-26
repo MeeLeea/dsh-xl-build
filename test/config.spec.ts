@@ -9,9 +9,8 @@ describe('Config', () => {
       runsDir: '.dsh/xl-build/runs',
       maxConcurrentNodes: 4,
       maxConcurrentAgentTools: 4,
-      runTimeoutMs: 1_800_000,
+      runTimeoutMs: 3_600_000,
       maxSteps: 200,
-      runRootProvider: 'spawn',
       scriptTimeoutMs: 120_000,
       allowedScriptRuntimes: ['shell', 'ptc'],
       retryableToolErrors: [],
@@ -24,6 +23,12 @@ describe('Config', () => {
       memoryCurator: 'memory-curator',
       presetIdPrefix: 'xl-',
     })
+  })
+
+  it('leaves the run-root route unset so runs inherit the initiating session', () => {
+    const config = Config({})
+    expect(config.runRootProvider).toBeUndefined()
+    expect(config.runRootModel).toBeUndefined()
   })
 
   it('lets a cordis.yml override win over the default', () => {

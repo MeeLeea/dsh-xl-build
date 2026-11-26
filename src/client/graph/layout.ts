@@ -9,10 +9,10 @@
  */
 
 /** Geometry constants: one place to keep the board readable. */
-const NODE_WIDTH = 168
-const NODE_HEIGHT = 44
-const GAP_X = 88
-const GAP_Y = 20
+const NODE_WIDTH = 208
+const NODE_HEIGHT = 56
+const GAP_X = 96
+const GAP_Y = 28
 const LOOP_PAD = 20
 const ORIGIN_X = 24
 const ORIGIN_Y = 24

@@ -24,7 +24,10 @@ export interface Config {
    * conversation-level tool path, not graph execution.
    */
   maxConcurrentAgentTools: number
-  /** Wall-clock budget for one run, in milliseconds. */
+  /**
+   * Wall-clock budget for one run, in milliseconds. The default (one hour)
+   * admits one full retry of a 30-minute agent node before the run is cut.
+   */
   runTimeoutMs: number
   /** Maximum number of engine steps one run may take. */
   maxSteps: number
@@ -51,9 +54,14 @@ export interface Config {
   memoryMaxBytes: number
   /** Agent spec id used to curate memory at the end of a run. */
   memoryCurator: string
-  /** LLM provider route of the dormant run-root session a `/workflow run` executes in. */
-  runRootProvider: string
-  /** Optional model id overriding the run-root session's provider default. */
+  /**
+   * LLM adapter id for the dormant run-root session a `/workflow run` executes
+   * in. Workflow children inherit their provider/model from this agent, so the
+   * value must be a real adapter id — never a subagent backend name such as
+   * `spawn`. Default: inherit the initiating session's route.
+   */
+  runRootProvider?: string
+  /** Model id for the run-root session. Default: inherit the initiating session's model. */
   runRootModel?: string
   /**
    * Namespace prepended to each agent spec id to form the registered dsh agent
@@ -69,7 +77,7 @@ export const Config: Schema<Config> = Schema.object({
   runsDir: Schema.string().default('.dsh/xl-build/runs'),
   maxConcurrentNodes: Schema.natural().default(4),
   maxConcurrentAgentTools: Schema.natural().default(4),
-  runTimeoutMs: Schema.natural().default(1_800_000),
+  runTimeoutMs: Schema.natural().default(3_600_000),
   maxSteps: Schema.natural().default(200),
   scriptTimeoutMs: Schema.natural().default(120_000),
   allowedScriptRuntimes: Schema.array(Schema.union(['shell', 'ptc'])).default(['shell', 'ptc']),
@@ -81,7 +89,7 @@ export const Config: Schema<Config> = Schema.object({
   memoryDir: Schema.string().default('.dsh/xl-build/memory'),
   memoryMaxBytes: Schema.natural().default(16_000),
   memoryCurator: Schema.string().default('memory-curator'),
-  runRootProvider: Schema.string().default('spawn'),
+  runRootProvider: Schema.string(),
   runRootModel: Schema.string(),
   presetIdPrefix: Schema.string().default('xl-'),
 })

@@ -57,8 +57,8 @@ Every field is overridable from `cordis.yml`; the schema defaults in `src/host/c
 | `memoryMaxBytes` | `16000` | Byte budget for one workflow's memory file |
 | `memoryCurator` | `memory-curator` | Agent spec id curating memory |
 | `presetIdPrefix` | `xl-` | Namespace prepended to each agent spec id when registering it as a dsh agent preset |
-| `runRootProvider` | `spawn` | LLM provider route of the dormant run-root session a `/workflow run` executes in |
-| `runRootModel` | — | Optional model id overriding the run-root session default |
+| `runRootProvider` | — (inherits the initiating session) | LLM adapter id of the dormant run-root session a `/workflow run` executes in; workflow children inherit their route from it |
+| `runRootModel` | — (inherits the initiating session) | Model id for the run-root session |
 
 ## Agent definitions
 

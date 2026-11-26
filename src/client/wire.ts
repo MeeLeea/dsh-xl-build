@@ -77,9 +77,29 @@ const RunViewSchema = z.object({
   }).optional(),
 })
 
+const CatalogWorkflowViewSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  mermaid: z.string(),
+  /** Structural node list of the catalogued document; empty for catalogs persisted before it existed. */
+  nodes: z.array(z.object({
+    id: z.string(),
+    kind: z.string(),
+    body: z.string().optional(),
+  })).default([]),
+  /** Structural edge list of the catalogued document; empty for catalogs persisted before it existed. */
+  edges: z.array(z.object({
+    id: z.string(),
+    from: z.string(),
+    to: z.string(),
+    kind: z.string(),
+  })).default([]),
+})
+
 const CatalogSchema = z.object({
   agents: z.array(z.object({ id: z.string(), name: z.string(), description: z.string() })),
-  workflows: z.array(z.object({ id: z.string(), name: z.string(), description: z.string().optional(), mermaid: z.string() })),
+  workflows: z.array(CatalogWorkflowViewSchema),
 })
 
 const EMPTY_CATALOG: XlBuildView['catalog'] = { agents: [], workflows: [] }

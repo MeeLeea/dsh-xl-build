@@ -20,7 +20,8 @@ import {
   type WorkflowRunLimits,
   type WorkflowRunServices,
 } from '../src/host/workflow/run.ts'
-import { XL_EVENTS, type XlEventType } from '../src/host/events.ts'
+import { XL_EVENTS, type XlEventType, type NodeDeltaPayload } from '../src/host/events.ts'
+import type { NodeProgress } from '../src/host/workflow/run.ts'
 
 /** The completed result a stub child ends with. */
 function completedResult(text: string): SubagentResult {
@@ -63,6 +64,14 @@ interface JournalRecord {
   readonly payload: unknown
 }
 
+
+
+function deltaTexts(records: readonly JournalRecord[], nodeId: string): string[] {
+  return records
+    .filter((record) => record.name === XL_EVENTS.nodeDelta && (record.payload as { nodeId: string }).nodeId === nodeId)
+    .map((record) => (record.payload as NodeDeltaPayload).text)
+}
+
 /**
  * Services over an in-memory journal: agents resolve through the schema, so
  * each agent node's `agent` id is its node id, records land in an array, and
@@ -71,7 +80,11 @@ interface JournalRecord {
  * @param loadSubworkflow - child-document resolver; absent rejects every id.
  * @returns the run services and the captured records.
  */
-function harness(runner: AgentRunner<Agent>, loadSubworkflow?: (id: string) => WorkflowDocument): {
+function harness(
+  runner: AgentRunner<Agent>,
+  loadSubworkflow?: (id: string) => WorkflowDocument,
+  readNodeProgress?: (childId: string) => NodeProgress | undefined,
+): {
   readonly services: WorkflowRunServices<Agent>
   readonly records: JournalRecord[]
 } {
@@ -91,6 +104,7 @@ function harness(runner: AgentRunner<Agent>, loadSubworkflow?: (id: string) => W
     }),
     loadSubworkflow: loadSubworkflow ?? (() => { throw new Error('no subworkflow catalog') }),
     readMemory: () => '',
+    ...(readNodeProgress !== undefined ? { readNodeProgress } : {}),
   }
   return { services, records }
 }
@@ -146,6 +160,92 @@ describe('workflow engine execution', () => {
     // Exactly one merged section per upstream proves the consumed arrivals reached the join.
     expect(merged.match(/\[from aa\]/g)).toHaveLength(1)
     expect(merged.match(/\[from bb\]/g)).toHaveLength(1)
+  })
+
+  it('streams live progress snapshots and the final output as node-delta records', async () => {
+    const document = parseWorkflowDocument({
+      schemaVersion: 1,
+      id: 'progress-flow',
+      name: 'Progress',
+      entry: 'start',
+      nodes: [
+        { kind: 'input', id: 'start', params: [] },
+        { kind: 'agent', id: 'work', agent: 'work', task: 'work' },
+        { kind: 'output', id: 'done', value: '{{nodes.work}}' },
+      ],
+      edges: [
+        { id: 'e1', from: 'start', to: 'work', kind: 'flow' },
+        { id: 'e2', from: 'work', to: 'done', kind: 'flow' },
+      ],
+      outputs: { result: '{{nodes.done}}' },
+    })
+    // The child settles only when the test releases it, so the progress
+    // poll ticks while the node is running.
+    const pending: Array<() => void> = []
+    const runner: AgentRunner<Agent> = {
+      start: async (input) => ({
+        childId: `child-${input.spec.id}`,
+        result: new Promise<SubagentResult>((resolve) => {
+          pending.push(() => resolve(completedResult('final answer')))
+        }),
+      }),
+      disposeAll: async () => {},
+    }
+    const reads: string[] = []
+    const readNodeProgress = (childId: string): NodeProgress => {
+      reads.push(childId)
+      return { steps: 2, llmMs: 4200, draft: 'streaming' }
+    }
+    const { services, records } = harness(runner, undefined, readNodeProgress)
+    const handle = startWorkflowRun<Agent>({
+      document,
+      inputs: {},
+      runId: 'progress',
+      limits: { ...LIMITS, progressIntervalMs: 5 },
+      services,
+    })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(reads.length).toBeGreaterThan(0)
+    expect(reads.every((id) => id === 'child-work')).toBe(true)
+    for (const release of pending) release()
+    const summary = await handle.outcome
+
+    expect(summary.outcome).toBe('completed')
+    // Identical snapshots dedupe to one live record; the final output replaces it.
+    expect(deltaTexts(records, 'work')).toEqual(['2 steps · 4s\nstreaming', 'final answer'])
+    const names = records.map((record) => record.name)
+    expect(names.indexOf(XL_EVENTS.nodeDelta)).toBeLessThan(names.lastIndexOf(XL_EVENTS.nodeEnd))
+  })
+
+  it('records the final output preview without a progress source', async () => {
+    const document = parseWorkflowDocument({
+      schemaVersion: 1,
+      id: 'final-only-flow',
+      name: 'FinalOnly',
+      entry: 'start',
+      nodes: [
+        { kind: 'input', id: 'start', params: [] },
+        { kind: 'agent', id: 'work', agent: 'work', task: 'work' },
+        { kind: 'output', id: 'done', value: '{{nodes.work}}' },
+      ],
+      edges: [
+        { id: 'e1', from: 'start', to: 'work', kind: 'flow' },
+        { id: 'e2', from: 'work', to: 'done', kind: 'flow' },
+      ],
+      outputs: { result: '{{nodes.done}}' },
+    })
+    const calls: StubCall[] = []
+    const { services, records } = harness(recordingRunner(calls))
+    const summary = await startWorkflowRun<Agent>({
+      document,
+      inputs: {},
+      runId: 'final-only',
+      limits: LIMITS,
+      services,
+    }).outcome
+
+    expect(summary.outcome).toBe('completed')
+    expect(deltaTexts(records, 'work')).toEqual(['result-work'])
   })
 
   it('runs the loop body once per round and never again at the top level', async () => {

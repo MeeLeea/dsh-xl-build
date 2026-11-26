@@ -64,7 +64,7 @@ function cls(...names: readonly Css[]): string {
 }
 
 /** Notch width of the join shape, cut into its left edge. */
-const JOIN_NOTCH = 12
+const JOIN_NOTCH = 14
 
 /**
  * Render the workflow topology board.

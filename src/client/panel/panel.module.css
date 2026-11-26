@@ -10,7 +10,7 @@
   overflow-y: auto;
   padding: 12px;
   color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-l1);
+  background: var(--dsw-alias-bg-layer-1);
 }
 
 .empty {
@@ -35,7 +35,7 @@
   max-width: 360px;
   padding: 4px 8px;
   color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-l2);
+  background: var(--dsw-alias-bg-layer-2);
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 6px;
 }
@@ -50,10 +50,15 @@
   padding: 4px 8px;
   font-size: 11px;
   color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-bg-l2);
+  background: var(--dsw-alias-bg-layer-2);
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 6px;
   cursor: pointer;
+}
+
+/* The topology keeps its native size; wide graphs scroll instead of shrinking to unreadable. */
+.graphWrap {
+  overflow-x: auto;
 }
 
 .heading {
@@ -68,20 +73,20 @@
   grid-template-columns: auto 1fr;
   gap: 4px 12px;
   padding: 8px;
-  background: var(--dsw-alias-bg-l2);
+  background: var(--dsw-alias-bg-layer-2);
   border: 1px solid var(--dsw-alias-border-l1);
   border-radius: 8px;
 }
 
 .detailKey {
   color: var(--dsw-alias-label-secondary);
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   font-size: 11px;
 }
 
 .detailValue {
   overflow-wrap: anywhere;
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   font-size: 11px;
 }
 
@@ -102,7 +107,7 @@
 
 .artifactPath {
   overflow: hidden;
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   font-size: 11px;
   color: var(--dsw-alias-label-primary);
   text-overflow: ellipsis;
@@ -112,7 +117,7 @@
 .artifactOpen {
   overflow: hidden;
   padding: 0;
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   font-size: 11px;
   color: var(--dsw-alias-label-primary);
   text-align: left;
@@ -150,7 +155,7 @@
 .previewText {
   max-height: 160px;
   overflow-y: auto;
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   font-size: 11px;
   color: var(--dsw-alias-label-secondary);
   white-space: pre-wrap;
@@ -158,7 +163,7 @@
 }
 
 .errorClass {
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   color: var(--dsw-alias-state-error-primary);
 }
 
@@ -172,7 +177,7 @@
 }
 
 .runSummaryId {
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   color: var(--dsw-alias-label-primary);
 }
 
@@ -192,7 +197,7 @@
 }
 
 .artifactGroupHead {
-  font-family: var(--dsw-alias-font-mono);
+  font-family: var(--ds-font-family-code);
   font-size: 11px;
   color: var(--dsw-alias-label-secondary);
 }

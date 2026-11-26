@@ -37,6 +37,30 @@ describe('parseXlBuildView', () => {
     expect(parseXlBuildView({ catalog, runs: 'x' })?.runs).toEqual([])
   })
 
+  it('defaults a legacy catalog workflow to an empty structural graph and parses a structural one', () => {
+    // A catalog persisted before the structural projection exists: nodes and
+    // edges default to [] so the cached view still validates.
+    const legacy = parseXlBuildView({ catalog, runs: [validRun] })
+    expect(legacy?.catalog.workflows[0]?.nodes).toEqual([])
+    expect(legacy?.catalog.workflows[0]?.edges).toEqual([])
+
+    const structural = parseXlBuildView({
+      catalog: {
+        agents: [],
+        workflows: [{
+          id: 'chain',
+          name: 'Chain',
+          mermaid: 'graph TD',
+          nodes: [{ id: 'start', kind: 'input' }, { id: 'plan', kind: 'agent' }],
+          edges: [{ id: 'start-to-plan', from: 'start', to: 'plan', kind: 'flow' }],
+        }],
+      },
+      runs: [validRun],
+    })
+    expect(structural?.catalog.workflows[0]?.nodes.map((node) => node.id)).toEqual(['start', 'plan'])
+    expect(structural?.catalog.workflows[0]?.edges).toHaveLength(1)
+  })
+
   it('returns undefined for a non-object or an object with neither key', () => {
     expect(parseXlBuildView(undefined)).toBeUndefined()
     expect(parseXlBuildView(null)).toBeUndefined()

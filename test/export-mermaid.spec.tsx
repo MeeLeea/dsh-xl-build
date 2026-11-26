@@ -146,7 +146,7 @@ describe('ExportMermaid download', () => {
 
 describe('WorkflowPanel export wiring', () => {
   it('shows the export actions only when the catalog carries the run workflow', () => {
-    const cataloged = viewWith([{ id: 'release', name: 'Release', mermaid: MERMAID }])
+    const cataloged = viewWith([{ id: 'release', name: 'Release', mermaid: MERMAID, nodes: [], edges: [] }])
     const { unmount } = render(<WorkflowPanel wire={wireOf(cataloged)} openArtifact={vi.fn()} t={t} />)
     expect(screen.getByRole('button', { name: zh.downloadMermaid })).toBeTruthy()
     unmount()

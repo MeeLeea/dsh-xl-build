@@ -226,7 +226,7 @@ JSON 与 YAML 等价，同一文档两种写法都会被接受。
 
 ## 运行时行为与产物
 
-- `run` 在独立的 Run 根会话里执行（`runRootProvider` / `runRootModel` 决定路由），完成或失败后向发起会话发一条 follow-up：runId、各节点一行摘要、产物路径与 `dsh-resource://` 链接。
+- `run` 在独立的 Run 根会话里执行（路由默认继承发起会话的 provider/model，`runRootProvider` / `runRootModel` 可覆盖），完成或失败后向发起会话发一条 follow-up：runId、各节点一行摘要、产物路径与 `dsh-resource://` 链接。
 - 每次 Run 一个目录：`<runsDir>/<runId>/` 下 `workflow.json`（启动时快照）、`journal.jsonl`（全部事件）、`artifacts/<nodeId>/`（节点产物）。`persistRuns: false` 时只留内存态 journal。
 - 侧栏看板展示活跃 Run 与最近 `recentRuns`（默认 5）个已结束 Run：节点状态、耗时、输出预览（`wirePreviewBytes`，默认 2048）、错误详情、入边载荷；工具栏可复制/下载 mermaid。
 - Run 级预算：`runTimeoutMs`（默认 1800000 ms）与 `maxSteps`（默认 200，跨帧累计）。

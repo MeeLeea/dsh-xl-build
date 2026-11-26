@@ -82,7 +82,7 @@ describe('xlBuild projection fold', () => {
       NODE_START('r1', 'n1', 2),
       { type: XL_EVENTS.nodeInput, seq: 3, data: { version: 1, runId: 'r1', nodeId: 'n1', edges: [], text: 'do the thing' } },
       NODE_DELTA('r1', 'n1', 'hel', 4),
-      NODE_DELTA('r1', 'n1', 'lo', 5),
+      NODE_DELTA('r1', 'n1', 'hello', 5),
       NODE_END('r1', 'n1', 6),
       {
         type: XL_EVENTS.edgeTransfer,
@@ -112,6 +112,20 @@ describe('xlBuild projection fold', () => {
     expect(run?.edges).toEqual([
       { edgeId: 'e1', from: 'n1', to: 'n2', kind: 'normal', format: 'md', bytes: 12 },
     ])
+  })
+
+  it('replaces the node preview with each node-delta snapshot', () => {
+    const state = fold([
+      RUN_START('r1', 1),
+      NODE_START('r1', 'n1', 2),
+      NODE_DELTA('r1', 'n1', 'step 1 · drafting', 3),
+      NODE_DELTA('r1', 'n1', 'step 2 · verifying', 4),
+    ])
+    const view = buildXlBuildView(state, OPTIONS)
+    expect(view.runs[0]?.nodes[0]?.outputPreview).toBe('step 2 · verifying')
+    // A repeated identical snapshot keeps the same state reference.
+    const again = applyXlBuildRecord(state, NODE_DELTA('r1', 'n1', 'step 2 · verifying', 5))
+    expect(again).toBe(state)
   })
 
   it('returns the same state reference for foreign and malformed records', () => {
@@ -179,7 +193,13 @@ describe('xlBuild projection fold', () => {
     }])
     expect(buildXlBuildView(state, OPTIONS).catalog).toEqual({
       agents: [{ id: 'reviewer', name: 'Reviewer', description: 'Reviews.' }],
-      workflows: [{ id: 'release', name: 'Release', mermaid: 'flowchart TD\n  %% note: x\n' }],
+      workflows: [{
+        id: 'release',
+        name: 'Release',
+        mermaid: 'flowchart TD\n  %% note: x\n',
+        nodes: [],
+        edges: [],
+      }],
     })
   })
 })

@@ -139,8 +139,8 @@ workflow.edge("start", "research")
 | `memoryMaxBytes` | `16000` | 单个工作流记忆文件的字节上限（读截断与写门槛共用） |
 | `memoryCurator` | `memory-curator` | 策展记忆的 agent spec id（内置定义，同名用户定义优先） |
 | `presetIdPrefix` | `xl-` | 把每个 agent spec id 注册为 dsh agent preset 时前置的命名空间 |
-| `runRootProvider` | `spawn` | `/workflow run` 休眠根会话的 provider |
-| `runRootModel` | （provider 默认） | 覆盖根会话的模型 id |
+| `runRootProvider` | （继承发起会话） | `/workflow run` 休眠根会话的 LLM 适配器 id；workflow 子代理从它继承路由 |
+| `runRootModel` | （继承发起会话） | 根会话的模型 id |
 
 ## 产出与链接行为
 

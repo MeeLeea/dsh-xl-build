@@ -11,4 +11,4 @@ prompt: |
   - Report: the script path, how to invoke it, what it verified, and any precondition the caller must satisfy.
 agentPreset: standard
 readOnly: false
-timeoutMs: 1200000
+timeoutMs: 1800000

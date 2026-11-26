@@ -82,6 +82,26 @@ export const CatalogAgentSchema = z.object({
 })
 export type CatalogAgent = z.infer<typeof CatalogAgentSchema>
 
+/** One workflow node of the catalog's structural graph projection. */
+export const CatalogWorkflowNodeSchema = z.object({
+  id: z.string(),
+  /** Document node kind (`input`, `agent`, `join`, ...); the client only keys shape + detail by it. */
+  kind: z.string(),
+  /** Entry node of the loop body; present on loop nodes only. */
+  body: z.string().optional(),
+})
+export type CatalogWorkflowNode = z.infer<typeof CatalogWorkflowNodeSchema>
+
+/** One workflow edge of the catalog's structural graph projection. */
+export const CatalogWorkflowEdgeSchema = z.object({
+  id: z.string(),
+  from: z.string(),
+  to: z.string(),
+  /** Document edge kind (`flow`, `fan-out`, `loop-back`, ...). */
+  kind: z.string(),
+})
+export type CatalogWorkflowEdge = z.infer<typeof CatalogWorkflowEdgeSchema>
+
 /** Workflow entry exposed to clients. */
 export const CatalogWorkflowSchema = z.object({
   id: z.string(),
@@ -89,6 +109,10 @@ export const CatalogWorkflowSchema = z.object({
   description: z.string().optional(),
   /** Deterministic §6.6 Mermaid projection of the current document; the export action ships it verbatim. */
   mermaid: z.string(),
+  /** Structural node list of the current document; defaults empty for catalogs persisted before it existed. */
+  nodes: z.array(CatalogWorkflowNodeSchema).default([]),
+  /** Structural edge list of the current document; defaults empty for catalogs persisted before it existed. */
+  edges: z.array(CatalogWorkflowEdgeSchema).default([]),
 })
 export type CatalogWorkflow = z.infer<typeof CatalogWorkflowSchema>
 
@@ -159,6 +183,12 @@ export const NodeInputRecordSchema = z.object({
 })
 export type NodeInputPayload = z.infer<typeof NodeInputRecordSchema>
 
+/**
+ * Live progress snapshot for one running node. Each record carries the FULL
+ * current preview text (a stats line plus draft tail, or the node's final
+ * output); the projection replaces the node's preview with it, so the client
+ * always shows the newest state instead of an append-only history.
+ */
 export const NodeDeltaRecordSchema = z.object({
   version: z.literal(1),
   runId: z.string(),

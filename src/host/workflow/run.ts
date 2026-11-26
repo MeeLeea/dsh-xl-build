@@ -40,6 +40,7 @@ import { mergeJoinInputs } from './join.ts'
 import {
   digestOf,
   edgeTransferRecord,
+  nodeDeltaRecord,
   nodeEndRecord,
   nodeErrorRecord,
   nodeInputRecord,
@@ -48,6 +49,7 @@ import {
   runStartRecord,
 } from './journal.ts'
 import { artifactRef, runDir } from '../paths.ts'
+import { truncatePreview } from '../projection.ts'
 import { composeNodeInput } from './node-input.ts'
 import type { NodeInbound } from './node-input.ts'
 import { shouldRetry, attemptCap } from './retry.ts'
@@ -58,6 +60,33 @@ import type { TemplateFrame } from './template.ts'
 
 /** The durable record payloads this engine writes. */
 export type XlRecordPayload = PluginRecordMap[XlEventType]
+
+/** Default poll interval for a running agent node's live progress. */
+const NODE_PROGRESS_INTERVAL_MS = 5_000
+/** Default byte budget for the preview snapshots this engine records. */
+const NODE_PREVIEW_BUDGET_BYTES = 2_048
+
+/** Live progress figures for one running agent child. */
+export interface NodeProgress {
+  /** Steps the child has settled so far. */
+  readonly steps: number
+  /** Model time the child has spent so far, in milliseconds. */
+  readonly llmMs: number
+  /** Newest streamed assistant text; empty between steps. */
+  readonly draft: string
+}
+
+/** Render one progress snapshot as the node's live preview text. */
+function progressPreviewText(progress: NodeProgress): string {
+  const stats = `${progress.steps} steps · ${Math.round(progress.llmMs / 1000)}s`
+  return progress.draft === '' ? stats : `${stats}\n${progress.draft}`
+}
+
+/** Render a node's final output as the preview text, within the byte budget. */
+function finalPreviewText(output: unknown, budgetBytes: number): string {
+  const text = typeof output === 'string' ? output : JSON.stringify(output, null, 2) ?? ''
+  return truncatePreview(text, budgetBytes).text
+}
 
 /** The durable-record writer the composition root binds to the run session. */
 export interface WorkflowRecordSink {
@@ -107,6 +136,11 @@ export interface WorkflowRunServices<P> {
   readonly runTool?: ToolExecutor
   /** Read the workflow's distilled memory; called once per (sub)run at start, '' when disabled or missing. */
   readonly readMemory: (workflowId: string) => string
+  /**
+   * Read the live progress of one agent child by its session id; undefined
+   * disables live node previews (the host has no usable source).
+   */
+  readonly readNodeProgress?: (childId: string) => NodeProgress | undefined
 }
 
 /** Run-level budgets the engine applies on top of the document's defaults. */
@@ -117,6 +151,10 @@ export interface WorkflowRunLimits {
   readonly scriptTimeoutMs: number
   readonly allowedScriptRuntimes: readonly string[]
   readonly retryableToolErrors: readonly string[]
+  /** How often a running agent node's progress is polled for its live preview. */
+  readonly progressIntervalMs?: number
+  /** Byte budget for the preview snapshots the engine records. */
+  readonly previewBudgetBytes?: number
 }
 
 /** One workflow run request. */
@@ -715,16 +753,54 @@ class WorkflowRun<P> {
       signal: this.controller.signal,
       delivery: 'caller',
     })
-    const result = await execution.result
-    if (result.stopReason !== 'completed') {
-      throw new NodeExecutionError(
-        this.controller.signal.aborted ? 'timeout' : 'transient',
-        result.diagnostic ?? `agent "${node.agent}" ended (${result.stopReason})`,
-      )
+    // Live previews: every node-delta record funnels through one queue, so
+    // a slow poll record can never overtake the final preview, and the final
+    // never lands before an earlier poll. Previews are best-effort — a
+    // failed record never fails the node.
+    const readProgress = this.options.services.readNodeProgress
+    const budget = this.options.limits.previewBudgetBytes ?? NODE_PREVIEW_BUDGET_BYTES
+    let queue: Promise<void> = Promise.resolve()
+    let lastSnapshot = ''
+    let settled = false
+    const emitSnapshot = (text: string, isFinal: boolean): void => {
+      if (!isFinal && (settled || text === lastSnapshot)) return
+      queue = queue.then(async () => {
+        if (!isFinal && settled) return
+        await this.record(XL_EVENTS.nodeDelta, nodeDeltaRecord({ runId: this.runId, nodeId: node.id, text }))
+        lastSnapshot = text
+      }).catch(() => {})
     }
-    return spec.outputSchema !== undefined && result.structured !== undefined
-      ? result.structured
-      : textOfBlocks(result.output)
+    const timer = readProgress === undefined ? undefined : setInterval(() => {
+      try {
+        const snapshot = readProgress(execution.childId)
+        if (snapshot !== undefined) emitSnapshot(progressPreviewText(snapshot), false)
+      } catch {
+        // Best-effort: one bad progress read never kills the host.
+      }
+    }, this.options.limits.progressIntervalMs ?? NODE_PROGRESS_INTERVAL_MS)
+    timer?.unref()
+    try {
+      const result = await execution.result
+      if (result.stopReason !== 'completed') {
+        throw new NodeExecutionError(
+          this.controller.signal.aborted ? 'timeout' : 'transient',
+          result.diagnostic ?? `agent "${node.agent}" ended (${result.stopReason})`,
+        )
+      }
+      const output = spec.outputSchema !== undefined && result.structured !== undefined
+        ? result.structured
+        : textOfBlocks(result.output)
+      // Stop polling before the final preview: no live snapshot may land
+      // after it, and the final replaces the last stats snapshot so a
+      // completed node shows its real output instead of a stale progress line.
+      settled = true
+      emitSnapshot(finalPreviewText(output, budget), true)
+      await queue
+      return output
+    } finally {
+      settled = true
+      if (timer !== undefined) clearInterval(timer)
+    }
   }
 
   /** Run one script node through the script executor. */

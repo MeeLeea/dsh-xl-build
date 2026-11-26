@@ -58,6 +58,30 @@ const LIST_STATE = {
   projectionsBySession: {},
 }
 
+// A completed run session the client never opened: no retained binding,
+// and its `xlBuild` values arrived via a list-carried cached block, so the
+// per-session cell state stays 'idle' while the values are final-state data.
+const CACHED_RUN = {
+  catalog: { agents: [], workflows: [] },
+  runs: [{
+    runId: 'run-done',
+    workflowId: 'wf',
+    workflowHash: '00000000',
+    status: 'completed',
+    nodes: [],
+    edges: [],
+    artifacts: [],
+  }],
+}
+const LIST_WITH_CACHED_RUN = {
+  ids: ['session-1', 'session-run'],
+  byId: { 'session-1': { updatedAt: 1 }, 'session-run': { updatedAt: 2 } },
+  phase: 'ready',
+  projectionsBySession: {
+    'session-run': { values: { xlBuild: CACHED_RUN }, state: 'idle', error: null },
+  },
+}
+
 /** Minimal session wire face: one retained session whose `xlBuild` projection is published. */
 class FakeSessions extends Service {
   /** Live face subscription, recorded so the spec can tell reads from binding. */
@@ -84,14 +108,33 @@ class FakeSessions extends Service {
     }
   }
 
+  /** The list snapshot the wire source reads; specs swap it to simulate list refreshes. */
+  listState: typeof LIST_STATE | typeof LIST_WITH_CACHED_RUN = LIST_STATE
+
   get list(): {
-    getSnapshot(): typeof LIST_STATE
+    getSnapshot(): typeof LIST_STATE | typeof LIST_WITH_CACHED_RUN
     subscribe(listener: () => void): () => void
   } {
+    const that = this
     return {
-      getSnapshot: () => LIST_STATE,
-      subscribe: () => () => {},
+      getSnapshot: () => that.listState,
+      subscribe: (listener: () => void) => {
+        that.listeners.push(listener)
+        return () => {
+          const index = that.listeners.indexOf(listener)
+          if (index >= 0) that.listeners.splice(index, 1)
+        }
+      },
     }
+  }
+
+  /** List listeners the spec can fire to simulate a list change. */
+  readonly listeners: (() => void)[] = []
+
+  /** Swap the list snapshot and notify, like a refreshList landing. */
+  publishList(state: typeof LIST_STATE | typeof LIST_WITH_CACHED_RUN): void {
+    this.listState = state
+    for (const listener of [...this.listeners]) listener()
   }
 }
 
@@ -277,3 +320,36 @@ it('registers the main panel and the sidebar row, and withdraws both on disposal
   expect(conversation.registered).toEqual([])
   await ctx.fiber.dispose()
 });
+
+it('retains a completed run whose cached projection values arrive with the list, state idle', async () => {
+  const ctx = new Context()
+  new FakeLocale(ctx)
+  const sessions = new FakeSessions(ctx)
+  const slots = new FakeSlots(ctx)
+  new FakeInputTriggers(ctx)
+  new FakeUiConversation(ctx)
+  new FakeSidebarRight(ctx)
+  const fiber = ctx.plugin({ inject: [...inject], apply: (pluginCtx) => mountClient(pluginCtx) })
+  await fiber
+  try {
+    const panel = slots.entries('main').find((entry) => entry.component === WorkflowPanel)
+    expect(panel?.options).toMatchObject({ key: 'xl-build' })
+    const face = panel?.inject?.() as XlBuildInjected
+
+    // Before the list lands the cached block, the wire shows only the retained session catalog.
+    const initial = face.wire.getSnapshot()
+    expect(initial.view).toEqual(CATALOG)
+
+    // A refreshList lands the completed run as a cold row: values present, cell state idle.
+    sessions.publishList(LIST_WITH_CACHED_RUN)
+    const merged = face.wire.getSnapshot()
+    expect(merged.view).toBeDefined()
+    expect(merged.view?.runs.map((run) => run.runId)).toEqual(['run-done'])
+    // The merged catalog is the newest contributing view (the run session,
+    // updatedAt 2 over 1) — pre-existing merge semantics, unchanged by this fix.
+    expect(merged.view?.catalog).toEqual(CACHED_RUN.catalog)
+  } finally {
+    await fiber.dispose()
+  }
+  await ctx.fiber.dispose()
+})

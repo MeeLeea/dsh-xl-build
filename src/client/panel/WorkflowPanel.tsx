@@ -8,7 +8,7 @@ import { useState, useSyncExternalStore } from 'react'
 import type { ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
-import { layoutWorkflow } from '../graph/layout.ts'
+import { layoutWorkflow, type LayoutEdgeInput, type LayoutNodeInput } from '../graph/layout.ts'
 import { WorkflowGraph, type GraphEdgeState, type GraphNodeStatus } from '../graph/render.tsx'
 import { NODE_STATUS_KEYS, RUN_STATUS_KEYS } from '../status.ts'
 import type { WireSource, XlBuildRunView, XlBuildView } from '../wire.ts'
@@ -45,6 +45,49 @@ function edgeStatesOf(run: XlBuildRunView): Record<string, GraphEdgeState> {
   }]))
 }
 
+/**
+ * Nodes for the topology layout. The catalog document carries the full graph
+ * (start, joins, tail, and edges the journal never records — e.g. an input
+ * node's null-payload transfer); the run view only carries what actually
+ * executed. Prefer the document so an in-flight or cancelled run still shows
+ * every node it never reached; fall back to the run view when the catalog
+ * predates the structural projection.
+ * @param catalogWorkflow - catalog entry matching the run's workflow, if any.
+ * @param run - the selected run view.
+ * @returns layout node inputs for the topology board.
+ */
+function graphNodesOf(
+  catalogWorkflow: XlBuildView['catalog']['workflows'][number] | undefined,
+  run: XlBuildRunView,
+): LayoutNodeInput[] {
+  if (catalogWorkflow === undefined || catalogWorkflow.nodes.length === 0) {
+    return run.nodes.map((node) => ({ id: node.nodeId, kind: node.kind }))
+  }
+  return catalogWorkflow.nodes.map((node) => ({
+    id: node.id,
+    kind: node.kind,
+    ...node.body !== undefined ? { body: node.body } : {},
+  }))
+}
+
+/**
+ * Edges for the topology layout, mirroring graphNodesOf: the document
+ * edges whenever the catalog carries them, else the run view's recorded
+ * transfers.
+ * @param catalogWorkflow - catalog entry matching the run's workflow, if any.
+ * @param run - the selected run view.
+ * @returns layout edge inputs for the topology board.
+ */
+function graphEdgesOf(
+  catalogWorkflow: XlBuildView['catalog']['workflows'][number] | undefined,
+  run: XlBuildRunView,
+): LayoutEdgeInput[] {
+  if (catalogWorkflow === undefined || catalogWorkflow.nodes.length === 0) {
+    return run.edges.map((edge) => ({ id: edge.edgeId, from: edge.from, to: edge.to, kind: edge.kind }))
+  }
+  return catalogWorkflow.edges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to, kind: edge.kind }))
+}
+
 /** One selector row: workflow, localized outcome, and a short run id. */
 function runLabel(run: XlBuildRunView, t: PropsLocale<'xl-build'>['t']): string {
   return run.workflowId + ' \u00b7 ' + t(RUN_STATUS_KEYS[run.status]) + ' \u00b7 ' + run.runId.slice(0, 8)
@@ -74,11 +117,10 @@ export function WorkflowPanel(props: WorkflowPanelProps): ReactNode {
   // user's choice; a vanished run falls back to the first without extra state.
   const run = (view.runs.find((candidate) => candidate.runId === selectedRunId) ?? view.runs[0]) as XlBuildRunView
   const catalogWorkflow = view.catalog.workflows.find((workflow) => workflow.id === run.workflowId)
+  // The detail pane still reads the run view: an unstarted document node has no
+  // recorded execution, so it selects nothing while still rendering on the graph.
   const selected = run.nodes.find((node) => node.nodeId === selectedNodeId)
-  const layout = layoutWorkflow(
-    run.nodes.map((node) => ({ id: node.nodeId, kind: node.kind })),
-    run.edges.map((edge) => ({ id: edge.edgeId, from: edge.from, to: edge.to, kind: edge.kind })),
-  )
+  const layout = layoutWorkflow(graphNodesOf(catalogWorkflow, run), graphEdgesOf(catalogWorkflow, run))
 
   return (
     <div className={css.panel}>
@@ -103,20 +145,22 @@ export function WorkflowPanel(props: WorkflowPanelProps): ReactNode {
       </div>
 
       <div className={css.heading}>{t('topologyHeading')}</div>
-      <WorkflowGraph
-        layout={layout}
-        ariaLabel={t('topologyAriaLabel')}
-        truncatedMark={t('truncatedMark')}
-        nodeAriaLabel={(node, status) => t('graphNodeAria', {
-          id: node.id,
-          kind: node.kind,
-          status: status === undefined ? t('runStatus.idle') : t(NODE_STATUS_KEYS[status]),
-        })}
-        nodeStatuses={nodeStatusesOf(run)}
-        edgeStates={edgeStatesOf(run)}
-        selectedNodeId={selected?.nodeId}
-        onSelectNode={setSelectedNodeId}
-      />
+      <div className={css.graphWrap}>
+        <WorkflowGraph
+          layout={layout}
+          ariaLabel={t('topologyAriaLabel')}
+          truncatedMark={t('truncatedMark')}
+          nodeAriaLabel={(node, status) => t('graphNodeAria', {
+            id: node.id,
+            kind: node.kind,
+            status: status === undefined ? t('runStatus.idle') : t(NODE_STATUS_KEYS[status]),
+          })}
+          nodeStatuses={nodeStatusesOf(run)}
+          edgeStates={edgeStatesOf(run)}
+          selectedNodeId={selected?.nodeId}
+          onSelectNode={setSelectedNodeId}
+        />
+      </div>
 
       <div className={css.heading}>{t('detailHeading')}</div>
       {selected === undefined

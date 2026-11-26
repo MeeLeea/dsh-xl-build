@@ -10,6 +10,7 @@ import type {
   ArtifactRef,
   EdgeFormat,
   EdgeTransferPayload,
+  NodeDeltaPayload,
   NodeEndPayload,
   NodeErrorClass,
   NodeErrorPayload,
@@ -89,6 +90,15 @@ export function nodeInputRecord(input: {
   text: string
 }): NodeInputPayload {
   return { version: 1, runId: input.runId, nodeId: input.nodeId, edges: input.edges, text: input.text }
+}
+
+/** Build the node-delta record; `text` is the full progress snapshot for the node. */
+export function nodeDeltaRecord(input: {
+  runId: string
+  nodeId: string
+  text: string
+}): NodeDeltaPayload {
+  return { version: 1, runId: input.runId, nodeId: input.nodeId, text: input.text }
 }
 
 /** Build the edge-transfer record. */

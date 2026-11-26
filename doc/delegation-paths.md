@@ -16,7 +16,7 @@ workflow { kind: "agent", agent } ─┘         └─> runner: 只读前缀 + 
                                                   └─> startActivation({ provider: spec.provider })
 ```
 
-三条入口共用同一个 runner 与准入闸门（`maxConcurrentAgentTools`，FIFO 排队）。`@提及` 在输入步就完成解析并注入指令（第一条动作必须是调 `xl_agent_run`），不存在静默触发。
+三条入口共用同一个 runner 与准入闸门（`maxConcurrentAgentTools`，FIFO 排队）。`@提及` 在输入步就完成解析并注入指令（第一条动作必须是调 `xl_agent_run`），不存在静默触发。渲染后逐节点的 request 形态见 [request-template.md](request-template.md)。
 
 ### 1.2 字段如何生效（含现状缺陷）
 

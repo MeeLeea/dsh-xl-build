@@ -5,8 +5,6 @@
 
 .graph {
   display: block;
-  max-width: 100%;
-  height: auto;
 }
 
 /* Loop body rectangle: a dashed frame around the body nodes. */
@@ -43,20 +41,22 @@
 
 .edgeLabel {
   fill: var(--dsw-alias-label-secondary);
-  font-family: var(--dsw-alias-font-mono);
-  font-size: 10px;
+  font-family: var(--ds-font-family-code);
+  font-size: 13px;
 }
 
 /* Base paint of one node; the group owns it so the status stroke cascades to
-   the kind shape instead of being overridden by the shape's own paint. */
+   the kind shape instead of being overridden by the shape's own paint. The
+   label opts out with stroke: none — shapes carry the status stroke, text
+   never does. */
 .nodeGroup {
-  fill: var(--dsw-alias-bg-l2);
+  fill: var(--dsw-alias-bg-layer-2);
   stroke: var(--dsw-alias-border-l2);
   stroke-width: 1;
 }
 
 .nodeIdle {
-  fill: var(--dsw-alias-bg-l2);
+  fill: var(--dsw-alias-bg-layer-2);
   stroke: var(--dsw-alias-border-l2);
 }
 
@@ -67,7 +67,14 @@
 
 .nodeStatusCompleted {
   stroke: var(--dsw-alias-state-success-primary);
-  stroke-width: 1.5;
+  /* Twice the idle frame, but light enough that the green reads as a finish
+     mark rather than a highlight. */
+  stroke-width: 2;
+}
+
+/* A finished node reads as done at a glance: green stroke, green label. */
+.nodeStatusCompleted .nodeLabel {
+  fill: var(--dsw-alias-state-success-primary);
 }
 
 .nodeStatusFailed {
@@ -86,7 +93,7 @@
 }
 
 .nodeSelected {
-  stroke-width: 2.5;
+  stroke-width: 3.5;
 }
 
 .nodeGroup:focus-visible {
@@ -100,7 +107,10 @@
 
 .nodeLabel {
   fill: var(--dsw-alias-label-primary);
-  font-size: 11px;
+  font-size: 16px;
+  /* Glyphs never take the group's status stroke: SVG stroke inheritance would
+     otherwise paint an outline around every letter and smear the label. */
+  stroke: none;
   pointer-events: none;
 }
 

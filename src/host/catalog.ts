@@ -39,6 +39,17 @@ export function buildCatalog(
         name: entry.document.name,
         ...entry.document.description !== undefined ? { description: entry.document.description } : {},
         mermaid: toMermaid(entry.document),
+        nodes: entry.document.nodes.map((node) => ({
+          id: node.id,
+          kind: node.kind,
+          ...node.kind === 'loop' ? { body: node.body } : {},
+        })),
+        edges: entry.document.edges.map((edge) => ({
+          id: edge.id,
+          from: edge.from,
+          to: edge.to,
+          kind: edge.kind,
+        })),
       }]
       : [])
   return {

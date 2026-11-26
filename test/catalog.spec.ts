@@ -82,9 +82,59 @@ describe('buildCatalog', () => {
           nodes: [{ kind: 'note', id: 'start', text: 'x' }],
           edges: [],
         }),
+        nodes: [{ id: 'start', kind: 'note' }],
+        edges: [],
       },
     ])
     expect(catalog.workflows[0]?.mermaid).toBe('flowchart TD\n  %% note: x\n')
+  })
+
+  it('projects each workflow node and edge structurally', () => {
+    const dir = workflowsDir()
+    writeFileSync(join(dir, 'pipeline.yml'), [
+      'schemaVersion: 1',
+      'id: pipeline',
+      'name: Pipeline',
+      'entry: start',
+      'nodes:',
+      '  - kind: input',
+      '    id: start',
+      '  - kind: agent',
+      '    id: plan',
+      '    agent: planner',
+      '    task: make a plan',
+      '  - kind: loop',
+      '    id: build',
+      '    body: plan',
+      '    until:',
+      '      expr: done',
+      '    maxIters: 3',
+      'edges:',
+      '  - id: start-to-plan',
+      '    from: start',
+      '    to: plan',
+      '    kind: flow',
+      '  - id: plan-to-build',
+      '    from: plan',
+      '    to: build',
+      '    kind: flow',
+      '  - id: build-to-plan',
+      '    from: build',
+      '    to: plan',
+      '    kind: loop-back',
+    ].join('\n'))
+    const catalog = buildCatalog(registryOf([]), dir)
+    const workflow = catalog.workflows.find((entry) => entry.id === 'pipeline')
+    expect(workflow?.nodes).toEqual([
+      { id: 'start', kind: 'input' },
+      { id: 'plan', kind: 'agent' },
+      { id: 'build', kind: 'loop', body: 'plan' },
+    ])
+    expect(workflow?.edges).toEqual([
+      { id: 'start-to-plan', from: 'start', to: 'plan', kind: 'flow' },
+      { id: 'plan-to-build', from: 'plan', to: 'build', kind: 'flow' },
+      { id: 'build-to-plan', from: 'build', to: 'plan', kind: 'loop-back' },
+    ])
   })
 
   it('fingerprints content changes only', () => {
