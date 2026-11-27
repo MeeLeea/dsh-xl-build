@@ -2,11 +2,12 @@ schemaVersion: 1
 id: cmodel-chip-pipeline
 name: CModel chip pipeline
 description: >-
-  designer 设计（实现细节经 ask 向用户确认）→ implementer 落码 → builder 构建运行（失败回带 implementer 修正，3 轮）→
-  reviewer QA 终局核验 → packer 可选打包。唯一必填输入是 requirement：resourcesRoot、need_driver、pack 等实现细节由
-  designer 经 ask.questions 向用户提问，用户在发起会话作答后引擎把答复编回该节点重跑并落入 facts，下游节点一律
-  引用 nodes.designer.facts.*。宿主无 ask 通道或 ask 轮次用尽时回退 report-ask 报告输出。cmodel-orchestrator 不入图：
-  派发与审阅汇总由本图的拓扑承担。
+  designer 设计（实现细节经 ask 向用户确认）→ scaffold 脚本节点把脚手架拷贝为工作目录下的工程目录并清理 → implementer 落码 →
+  builder 构建运行（失败回带 implementer 修正，3 轮）→ reviewer QA 终局核验 → packer 可选打包。报告类文件（设计、构建运行、
+  评审、打包）一律写入 <工作目录>/doc/；工程文件写入 <工作目录>/<芯粒名>/（chiplet 为空时为 demo/）。
+  唯一必填输入是 requirement：resourcesRoot、need_driver、pack 等实现细节由 designer 经 ask.questions 向用户提问，
+  用户在发起会话作答后引擎把答复编回该节点重跑并落入 facts，下游节点一律引用 nodes.designer.facts.*。
+  宿主无 ask 通道或 ask 轮次用尽时回退 report-ask 报告输出。cmodel-orchestrator 不入图：派发与审阅汇总由本图的拓扑承担。
 entry: start
 nodes:
   - id: start
@@ -20,7 +21,7 @@ nodes:
     task: |
       为目标芯粒的 SystemC CModel 开发产出设计文档（只读检查，不写生成文件）。
       目标芯粒与需求：{{input.requirement}}。
-      工程根目录即本工作目录，只读检查 inc/、src/、json_config/、CMakeLists.txt 与已有依赖。
+      只读检查工作目录已有的工程目录（inc/、src/、json_config/、CMakeLists.txt 与已有依赖）；尚无工程目录时以需求为准。
       resourcesRoot、need_driver、pack、芯粒名等实现细节无法从需求与工程推断时，按你的 ask 提问规范经 ask.questions 向用户提问；
       任务尾部出现「用户已答复上一轮 ask 的提问」块时逐题采用答复填入 facts 并输出 status: "done"，不要重复提问。
     context: { from: memory }
@@ -30,7 +31,28 @@ nodes:
     branches:
       - when: '{"or": [{"==": [{"var": "nodes.designer.status"}, "ask"]}, {"==": [{"var": "nodes.designer.status"}, "blocked"]}]}'
         to: report-ask
-    else: fix-loop
+    else: scaffold
+
+  - id: scaffold
+    kind: script
+    runtime: shell
+    stdin: edges
+    script: |
+      # 拷贝+清理+重命名：resourcesRoot/demo → 工作目录/<chiplet>（chiplet 为空时 demo）；
+      # 两行 stdin 由 ask-router 入边模板渲染：第 1 行 resourcesRoot，第 2 行芯粒名。
+      # 非终止错误一律按终止处理（引擎只看退出码，缺失源路径必须在这里失败）。
+      $ErrorActionPreference = 'Stop'
+      $lines = @($input)
+      $src = Join-Path $lines[0].Trim() 'demo'
+      $name = if ($lines.Count -gt 1) { $lines[1].Trim() } else { '' }
+      $dir = if ($name -ne '') { $name } else { 'demo' }
+      New-Item -ItemType Directory -Path $dir -Force | Out-Null
+      Copy-Item -Path (Join-Path $src '*') -Destination $dir -Recurse -Force
+      Remove-Item -Path (Join-Path $dir 'inc/*') -Recurse -Force -ErrorAction SilentlyContinue
+      if (Test-Path -LiteralPath (Join-Path $dir 'build')) {
+        Remove-Item -LiteralPath (Join-Path $dir 'build') -Recurse -Force
+      }
+      Write-Output "scaffold ready: $dir (source: $src, inc/ cleaned, build/ removed)"
 
   - id: fix-loop
     kind: loop
@@ -46,9 +68,11 @@ nodes:
     kind: agent
     agent: cmodel-implementer
     task: |
-      按【设计文档】把 CModel 生成文件写入 demo/ 子目录（与脚手架落位一致）。
+      按【设计文档】把 CModel 生成文件写入工程目录（脚手架已由 scaffold 节点拷贝并清理就位）。
+      工程目录：工作目录下 {{nodes.designer.facts.chiplet}}（为空时为 demo），生成文件一律写进该目录的 inc/、src/、json_config/、csv/ 子目录。
+      先把收到的【设计文档】原文写入 <工作目录>/doc/<工程目录名>.design.md。
       resourcesRoot：{{nodes.designer.facts.resourcesRoot}}（含 templates/ 与 demo/ 的 skill 目录绝对路径；缺失即 status: "blocked"）。
-      目标芯粒：{{nodes.designer.facts.chiplet}}（替换模板占位符用）；目标芯粒与需求：{{input.requirement}}。
+      目标芯粒：{{nodes.designer.facts.chiplet}}（替换模板占位符用；为空时按模板与配置自行命名）；目标芯粒与需求：{{input.requirement}}。
       need_driver 采用「{{nodes.designer.facts.need_driver}}」，不要输出 ask；功耗公式无法推断时在 result 中列为待确认项并采用合理默认，不要输出 ask；不引入新依赖。
     context: { lastMessages: 1 }
 
@@ -56,9 +80,9 @@ nodes:
     kind: agent
     agent: cmodel-builder
     task: |
-      构建并运行 demo/ 工程：清理重建 demo/build/，探测 SystemC，cmake -DCMAKE_BUILD_TYPE=Release 配置后 cmake --build --parallel，运行 RISCV_TLM 检查 stdout 与退出码；可自动修正的编译错误修正后重建。
-      resourcesRoot：{{nodes.designer.facts.resourcesRoot}}（缺失即 status: "blocked"）。
-      目标芯粒与需求：{{input.requirement}}。
+      构建并运行工程目录中的 CModel 工程：清理重建 <工程目录>/build/，探测 SystemC，cmake -DCMAKE_BUILD_TYPE=Release 配置后 cmake --build --parallel，运行 RISCV_TLM 检查 stdout 与退出码；可自动修正的编译错误修正后重建。
+      工程目录：工作目录下 {{nodes.designer.facts.chiplet}}（为空时为 demo）。
+      把构建/运行报告与完整仿真 stdout 写入 <工作目录>/doc/<工程目录名>.build.md；result 放结论并完整附上仿真 stdout。
       实现产物清单见入边载荷；确认文件就位后再构建，缺文件时 status: "blocked" 附缺失清单。
     context: { lastMessages: 1 }
 
@@ -73,7 +97,9 @@ nodes:
     kind: agent
     agent: cmodel-reviewer
     task: |
-      终局核验工作目录 demo/ 下生成的 CModel 工程：逐项核对 QA 清单与冲突处理规则，严格按 outputSchema 返回 pass 与 violations。
+      终局核验工作目录下工程目录中生成的 CModel 工程：逐项核对 QA 清单与冲突处理规则，严格按 outputSchema 返回 pass 与 violations。
+      工程目录：工作目录下 {{nodes.designer.facts.chiplet}}（为空时为 demo）。
+      评审结论同时写入 <工作目录>/doc/<工程目录名>.review.md。
       目标芯粒与需求：{{input.requirement}}
       resourcesRoot：{{nodes.designer.facts.resourcesRoot}}
 
@@ -95,10 +121,12 @@ nodes:
     kind: agent
     agent: cmodel-packer
     task: |
-      打包 demo/ 产物为 pack/<CHIPLET_NAME>/ 分发目录。
+      打包工程目录产物为 pack/<CHIPLET_NAME>/ 分发目录。
+      工程目录：工作目录下 {{nodes.designer.facts.chiplet}}（为空时为 demo）。
       resourcesRoot：{{nodes.designer.facts.resourcesRoot}}
-      芯粒名：{{nodes.designer.facts.chiplet}}（为空时从 demo/json_config/ 与 demo/inc/ 现有文件名推断）。
+      芯粒名：{{nodes.designer.facts.chiplet}}（为空时从工程目录的 json_config/ 与 inc/ 现有文件名推断）。
       need_driver：{{nodes.designer.facts.need_driver}}（为 "FALSE" 时不拷贝 CSV）。
+      打包清单写入 <工作目录>/doc/<工程目录名>.pack.md。
 
   - id: done
     kind: output
@@ -109,11 +137,14 @@ nodes:
       芯粒名：{{nodes.designer.facts.chiplet}}
       need_driver：{{nodes.designer.facts.need_driver}}
       pack：{{nodes.designer.facts.pack}}
+      ## 产出目录结构
+      工程目录：工作目录下 {{nodes.designer.facts.chiplet}}（为空时为 demo）
+      报告文件：<工作目录>/doc/ 下的设计文档、构建/运行报告（含仿真输出）、评审结论与打包清单
       ## 设计文档
       {{nodes.designer.result}}
       ## 生成文件清单
       {{nodes.implementer.result}}
-      ## 构建/运行报告
+      ## 仿真输出
       {{nodes.builder.result}}
       ## 评审结论
       pass={{nodes.reviewer.pass}}
@@ -139,7 +170,7 @@ nodes:
       {{nodes.reviewer.violations}}
       ## 最近一轮实现与构建反馈
       {{nodes.fix-loop}}
-      请查看 journal 与 demo/ 定位失败原因，修正后重新运行本工作流。
+      请查看 journal、<工作目录>/doc/ 下的报告文件与工程目录（芯粒名目录，为空时 demo）定位失败原因，修正后重新运行本工作流。
 
 edges:
   - { id: start-to-designer, from: start, to: designer, kind: flow }
@@ -149,10 +180,16 @@ edges:
     to: report-ask
     kind: branch
     condition: '{"or": [{"==": [{"var": "nodes.designer.status"}, "ask"]}, {"==": [{"var": "nodes.designer.status"}, "blocked"]}]}'
-  - id: ask-router-to-loop
+  - id: ask-router-to-scaffold
     from: ask-router
-    to: fix-loop
+    to: scaffold
     kind: branch
+    # scaffold 的 stdin：第 1 行 resourcesRoot，第 2 行芯粒名（脚本节点命令原文不渲染模板）。
+    template: "{{nodes.designer.facts.resourcesRoot}}\n{{nodes.designer.facts.chiplet}}"
+  - id: scaffold-to-loop
+    from: scaffold
+    to: fix-loop
+    kind: flow
     template: |
       【设计文档】
       {{nodes.designer.result}}

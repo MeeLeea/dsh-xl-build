@@ -61,6 +61,9 @@ function templateStrings(document: WorkflowDocument): { text: string, nodeId?: s
     if (node.kind === 'subworkflow') {
       for (const value of Object.values(node.inputs)) found.push({ text: value, nodeId: node.id })
     }
+    if (node.kind === 'ask') {
+      for (const question of node.questions) found.push({ text: question.question, nodeId: node.id })
+    }
   }
   for (const edge of document.edges) {
     if (edge.template !== undefined) found.push({ text: edge.template, edgeId: edge.id })

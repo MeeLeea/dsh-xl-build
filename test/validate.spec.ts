@@ -239,6 +239,27 @@ describe('V13 template references', () => {
       { id: 'e2', from: 'work', to: 'done', kind: 'flow' },
     ])).not.toContain('V13')
   })
+
+  it('checks ask question templates and accepts a well-formed ask node', () => {
+    // A question template that references a declared input is fine.
+    expect(rulesOf([
+      { kind: 'input', id: 'start', params: [{ name: 'version', required: true }] },
+      { kind: 'ask', id: 'confirm', questions: [{ id: 'go', question: '发布 {{input.version}} 吗?', options: [{ label: 'yes' }] }] },
+      { kind: 'output', id: 'done', value: '{{nodes.confirm.text}}' },
+    ], [
+      { id: 'e1', from: 'start', to: 'confirm', kind: 'flow' },
+      { id: 'e2', from: 'confirm', to: 'done', kind: 'flow' },
+    ])).toEqual([])
+    // A question template that references a missing input reports V13.
+    expect(rulesOf([
+      { kind: 'input', id: 'start' },
+      { kind: 'ask', id: 'confirm', questions: [{ question: '发布 {{input.ghost}} 吗?' }] },
+      { kind: 'output', id: 'done', value: 'x' },
+    ], [
+      { id: 'e1', from: 'start', to: 'confirm', kind: 'flow' },
+      { id: 'e2', from: 'confirm', to: 'done', kind: 'flow' },
+    ])).toContain('V13')
+  })
 })
 
 describe('V14 scale caps', () => {

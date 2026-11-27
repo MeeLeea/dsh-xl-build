@@ -57,7 +57,7 @@
 
 ### 2.2 bash 脚本 → prompt 内嵌逻辑 + resourcesRoot 前置
 
-`Scripts/*.sh` 是 bash 脚本;`standard` preset 的 shell 在 win32 上是 pwsh,不能依赖 bash 可用。四个脚本的逻辑改写为 prompt 指令(fs 读模板 → 名称替换 → 写目标),执行不依赖脚本文件存在。`demo/` 预置环境含 vendored 依赖树,不复制进本包,作为外部前置在 README 与 prompt 中标注。任务输入必填 `resourcesRoot`(指向含 `templates/` 与 `demo/` 的 skill 目录绝对路径),由用户经 orchestrator 传入每个子 agent;prompt 不硬编码绝对路径。路径缺失或模板读取失败时,implementer/builder 立即失败上报,不得猜测路径或使用默认位置。
+`Scripts/*.sh` 是 bash 脚本;`standard` preset 的 shell 在 win32 上是 pwsh,不能依赖 bash 可用。四个脚本中 scaffold.sh 的「拷贝脚手架 + 清理 inc/ + 删除 build/」由 `workflow/cmodel-chip-pipeline.yml` 的 `scaffold` script 节点承担(PowerShell 正文,win32 `ctx.shell` 即 `pwsh -Command`;脚本节点命令原文不渲染模板,resourcesRoot 与芯粒名经入边模板走 `stdin: edges` 传入),build/run/pack 三个脚本的逻辑改写为 prompt 指令(fs 读模板 → 名称替换 → 写目标),执行不依赖脚本文件存在。`demo/` 预置环境含 vendored 依赖树,不复制进本包,作为外部前置在 README 与 prompt 中标注;工作流先把 `resourcesRoot/demo/` 拷贝为工作目录下以芯粒名命名的工程目录(chiplet 为空时 `demo/`),生成文件一律写进该工程目录,不再直接写共享的 `demo/`。任务输入必填 `resourcesRoot`(指向含 `templates/` 与 `demo/` 的 skill 目录绝对路径)与工程目录名,由 workflow 节点任务文本传入每个子 agent;prompt 不硬编码绝对路径。路径缺失或模板读取失败时,implementer/builder 立即失败上报,不得猜测路径或使用默认位置。产出目录约定:报告类文件(设计文档、构建/运行报告、评审结论、打包清单)一律写 `<工作目录>/doc/<工程目录名>.{design,build,review,pack}.md`。
 
 ## 3 六个 agent
 
@@ -93,15 +93,15 @@
 | `timeoutMs` | `1800000` |
 | `outputSchema` | §2.1 封装(文件清单放 `result`;Step 3/4/5 的确认场景经 `ask` 上报) |
 
-继承(生成文件**直接写入 `demo/` 子目录**,与 scaffold.sh 落位一致,文件落位归本角色,见 §3.4):
+继承(生成文件写入**任务给定的工程目录**(工作目录下芯粒名目录,chiplet 为空时 `demo/`,脚手架已由 workflow `scaffold` 节点拷贝并清理),文件落位归本角色,并把收到的设计文档原文写 `<工作目录>/doc/<工程目录名>.design.md`,见 §3.4):
 
-- 脚手架落位映射:templates/chiplet.h → `demo/inc/<CHIPLET>.h`;templates/performance.json → `demo/json_config/<CHIPLET>.performance`;templates/pinmap.json → `demo/pinmap/<CHIPLET>.pinmap`;templates/Simulator.h → `demo/inc/Simulator.h`;templates/Simulator.cpp → `demo/src/Simulator.cpp`;templates/stimulus.csv → `demo/csv/<CHIPLET>.csv`(仅 `need_driver != "FALSE"`)。
+- 脚手架落位映射:templates/chiplet.h → `<工程目录>/inc/<CHIPLET>.h`;templates/performance.json → `<工程目录>/json_config/<CHIPLET>.performance`;templates/pinmap.json → `<工程目录>/pinmap/<CHIPLET>.pinmap`;templates/Simulator.h → `<工程目录>/inc/Simulator.h`;templates/Simulator.cpp → `<工程目录>/src/Simulator.cpp`;templates/stimulus.csv → `<工程目录>/csv/<CHIPLET>.csv`(仅 `need_driver != "FALSE"`)。
 - 占位符替换按模板区分:chiplet.h 与 stimulus.csv 替换 `CHIPLET`;performance.json 与 pinmap.json 替换 `CHIPLET_NAME`;Simulator.h 与 Simulator.cpp 替换 `CHIPLET` 及复合词 `CHIPLET.performance`、`CHIPLET.csv`、`CHIPLET.pinmap`(scaffold.sh L39-68 为准)。
 - TLM 日志(L46-70):SocketTrace 结构体、`BUFFER_THRESHOLD = 8192`、`wavefile/{ModuleName}_target_socket_0_wavefile.log` 与 `_initiator_socket_0_wavefile.log` 命名、时间戳 + 十六进制 payload 格式、达到阈值刷新且析构最终刷新。
 - 激励文件(L72-93):默认分帧二维格式 `pixel[0..N-1],duration_ns`,N = rows × columns;备选一维格式 `duration(ns), value`;注释必须说明维度、单位、含义。
 - 功耗报告(L95-102):除虚拟功能模型必须实现 `report_power()`、输出格式固定 `{name}: dynamic_power: {power}`、析构函数资源刷新后调用。
 - Simulator TB(L104-121):`Simulator.h` 完全自包含含双构造函数、`sc_signal<double>` 模拟信号连接、`clock_generator()` 10MHz 时钟线程、`write_configuration()` 配置写入线程、`data_b_transport()` 数据接收回调、内部芯粒实例;`Simulator.cpp` 为 `sc_main` 硬编码模板仅改类名;`.h` 放 `inc/`、实现放 `src/`。
-- CMakeLists:demo/ 已预置不动;目标项目无预置 CMakeLists 时由本角色按 designer 的要求(L206)生成。
+- CMakeLists:<工程目录>/ 已预置(scaffold 拷贝自 demo/)不动;目标项目无预置 CMakeLists 时由本角色按 designer 的要求(L206)生成。
 - Step 3 非标准激励格式 ask 策略(L210-224)、Step 4 功耗公式推断-否则-ask(L227-244)、Step 5 新依赖确认-否则-复用(L246-260)。
 
 ### 3.4 `cmodel-builder`(构建运行)
@@ -112,17 +112,17 @@
 | `timeoutMs` | `1800000` |
 | `outputSchema` | §2.1 封装(构建/运行报告放 `result`;不可自动修正的失败经 `ask` 上报) |
 
-继承(文件落位已归 implementer,本角色不再拷贝部署,只确认文件就位后构建):
+继承(文件落位已归 implementer,本角色不再拷贝部署,只确认文件就位后构建;构建/运行报告与完整仿真 stdout 写 `<工作目录>/doc/<工程目录名>.build.md`,result 附结论与完整仿真输出):
 
-- 构建逻辑(build.sh 完整语义):删除旧 `demo/build/` 后重建;探测 SystemC(`SYSTEMC_HOME` 环境变量、`has_systemc`、候选目录逐一尝试);Windows 优先 Ninja 生成器,其余按平台选 MinGW Makefiles / Unix Makefiles;`cmake -DCMAKE_BUILD_TYPE=Release` 配置;`cmake --build --parallel` 编译(等价 `make -j` 但不假设 make 存在)。
-- 运行逻辑(run.sh 完整语义):执行 `demo/build/` 下的 RISCV_TLM,Windows 优先 `RISCV_TLM.exe`;检查 stdout 与退出码,`return 0` 为成功(L293-296)。
+- 构建逻辑(build.sh 完整语义):删除旧 `<工程目录>/build/` 后重建;探测 SystemC(`SYSTEMC_HOME` 环境变量、`has_systemc`、候选目录逐一尝试);Windows 优先 Ninja 生成器,其余按平台选 MinGW Makefiles / Unix Makefiles;`cmake -DCMAKE_BUILD_TYPE=Release` 配置;`cmake --build --parallel` 编译(等价 `make -j` 但不假设 make 存在)。
+- 运行逻辑(run.sh 完整语义):执行 `<工程目录>/build/` 下的 RISCV_TLM,Windows 优先 `RISCV_TLM.exe`;检查 stdout 与退出码,`return 0` 为成功(L293-296)。
 - 编译错误自动修正循环(L295-309):头文件缺失、命名不一致、构造函数参数不匹配等自动修正后重建;SystemC 环境、依赖缺失、模型算法逻辑不可自动修正时经 `ask` 上报具体错误。
 
 ### 3.5 `cmodel-reviewer`(评审)
 
 | 项 | 值 |
 | --- | --- |
-| `readOnly` | `true` |
+| `readOnly` | `false`(评审结论写 `<工作目录>/doc/<工程目录名>.review.md`;工程文件仍不得修改,prompt 限定这是唯一写操作) |
 | `timeoutMs` | `600000` |
 | `outputSchema` | `{ pass: boolean, violations: string[] }`(终局核验,不产生 ask,故不用 §2.1 封装) |
 
@@ -136,11 +136,11 @@
 | `timeoutMs` | `600000` |
 | `outputSchema` | 不启用(正文输出打包文件清单,不产生 ask) |
 
-继承:Step 9 打包(L328-345):`pack/<CHIPLET_NAME>/` 结构硬编码、来源映射(`demo/inc/*` → `pack/<NAME>/inc/*` 整体拷贝、`demo/src/*` 同理、`demo/json_config/<NAME>.performance` → `pack/<NAME>/<NAME>.performance`、`demo/pinmap/<NAME>.pinmap` → `pack/<NAME>/<NAME>.pinmap`、`demo/csv/<NAME>.csv` → `pack/<NAME>/<NAME>.csv` 仅 `need_driver != "FALSE"` 时包含)。pinmap 行以 `Scripts/pack.sh:45` 为准——SKILL.md 自己的映射表(L361-368)漏了它,以脚本实际行为继承。`--no-driver` 参数处理同脚本。
+继承:Step 9 打包(L328-345):`pack/<CHIPLET_NAME>/` 结构硬编码、来源映射(`<工程目录>/inc/*` → `pack/<NAME>/inc/*` 整体拷贝、`<工程目录>/src/*` 同理、`<工程目录>/json_config/<NAME>.performance` → `pack/<NAME>/<NAME>.performance`、`<工程目录>/pinmap/<NAME>.pinmap` → `pack/<NAME>/<NAME>.pinmap`、`<工程目录>/csv/<NAME>.csv` → `pack/<NAME>/<NAME>.csv` 仅 `need_driver != "FALSE"` 时包含);打包清单写 `<工作目录>/doc/<工程目录名>.pack.md`。pinmap 行以 `Scripts/pack.sh:45` 为准——SKILL.md 自己的映射表(L361-368)漏了它,以脚本实际行为继承。`--no-driver` 参数处理同脚本。
 
 ## 4 不迁入的部分(有意保留)
 
-- **demo/ 预置环境本体**:含 vendored 依赖树,体积大且与 skill 目录绑定;builder 的 prompt 写明目录约定(`build/` 每次清空重建、`spdlog/`、`third_party/`、`parse-deps/` 不动),路径由任务输入 `resourcesRoot` 提供(§2.2),缺失即失败。
+- **demo/ 预置环境本体**:含 vendored 依赖树,体积大且与 skill 目录绑定,不复制进本包;workflow 的 `scaffold` script 节点在运行时把 `resourcesRoot/demo/` 拷贝为工作目录下的工程目录并清理,builder 的 prompt 写明目录约定(`build/` 每次清空重建、`spdlog/`、`third_party/`、`parse-deps/` 不动),工程目录与 `resourcesRoot` 由任务输入提供(§2.2),缺失即失败。
 - **templates/**:留在 skill 目录随 `resourcesRoot` 提供;不复制进插件包,避免与 skill 目录双源维护。
 - **「适用范围」段(L7-9)**:由各 agent 的 `description` 一行承担,`xl_agent_list` 只返回 description。
 - **Scripts/*.sh 文件本体**:逻辑已内嵌 prompt(§2.2),运行时不要求 bash 与脚本存在。

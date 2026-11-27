@@ -22,6 +22,7 @@ describe('Config', () => {
       memoryMaxBytes: 16_000,
       memoryCurator: 'memory-curator',
       presetIdPrefix: 'xl-',
+      pauseWhileAsking: true,
     })
   })
 

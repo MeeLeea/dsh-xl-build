@@ -19,6 +19,7 @@ const SHAPES: Record<Exclude<WorkflowNode['kind'], 'note'>, [string, string]> = 
   join: ['((', '))'],
   loop: ['[/', '\\]'],
   subworkflow: ['[[', ']]'],
+  ask: ['((', '))'],
   output: ['[(', ')]'],
 }
 
@@ -53,6 +54,8 @@ function labelOf(node: WorkflowNode): string {
       return `≤${node.maxIters} 轮`
     case 'subworkflow':
       return label(node.workflow)
+    case 'ask':
+      return label(node.questions[0]?.question ?? 'ask')
     case 'output':
       return 'output'
     case 'note':

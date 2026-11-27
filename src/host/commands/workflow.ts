@@ -11,6 +11,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandDefinition, CommandResult } from '@deepseek-ai/dsh-commands'
 import type { WorkflowDocument } from '../workflow/domain.ts'
 import { loadMergedWorkflowCatalog } from '../workflow/builtins.ts'
+import { resolveRunInputs } from '../workflow/execute.ts'
 import { loadWorkflowFile } from '../workflow/loaders.ts'
 import { toMermaid } from '../workflow/mermaid.ts'
 import { validateWorkflow } from '../workflow/validate.ts'
@@ -20,8 +21,11 @@ import type { WorkflowRunRuntime } from '../workflow/run.ts'
 export const WORKFLOW_COMMAND_NAME = 'workflow'
 
 /** Usage text returned for an unknown subcommand, a missing argument, or a bad flag. */
-export const WORKFLOW_USAGE = 'usage: /workflow run <id> ["<single input>"] [--input k=v]... [--self <nodeId>] '
+export const WORKFLOW_USAGE = 'usage: /workflow run <id> ["<target>"] [--input k=v]... [--self <nodeId>] '
   + '| /workflow list | /workflow validate <file> | /workflow export <id> --mermaid'
+
+/** Grammar half of the advertised input hint; the saved ids are appended per registration. */
+const WORKFLOW_INPUT_GRAMMAR = 'run <id> ["<target>"] [--input k=v] [--self <nodeId>] | list | validate <file> | export <id> --mermaid'
 
 /** One parsed `/workflow` invocation. */
 export type WorkflowCommand =
@@ -160,27 +164,45 @@ export function parseCommand(rawInput: string): WorkflowCommand {
 type PositionalResolution = { readonly inputs: Record<string, string> } | { readonly error: string }
 
 /**
- * Fold the positional input into the declared run inputs: it fills the single
- * declared input not already provided by `--input`. Zero or several candidates
- * is a readable error, never a silent guess.
+ * Fold the positional input into the declared run inputs: it fills the first
+ * declared input not already provided by `--input`, preferring required
+ * inputs so a bare `"<target>"` reaches the workflow's main input;
+ * declaration order breaks ties among the remaining optionals. Zero
+ * candidates is a readable error, never a silent guess.
  */
 function withPositionalInput(
   document: WorkflowDocument,
   provided: Record<string, string>,
   positional: string,
 ): PositionalResolution {
-  const candidates = document.nodes
+  const unfilled = document.nodes
     .flatMap((node) => node.kind === 'input' ? node.params : [])
-    .map((param) => param.name)
-    .filter((name) => !(name in provided))
-  const [single] = candidates
-  if (single === undefined) {
+    .filter((param) => !(param.name in provided))
+  const target = unfilled.find((param) => param.required) ?? unfilled[0]
+  if (target === undefined) {
     return { error: `positional input given, but "${document.id}" declares no unfilled run input; drop it or use --input k=v` }
   }
-  if (candidates.length > 1) {
-    return { error: `positional input is ambiguous; "${document.id}" declares several run inputs (${candidates.join(', ')}); use --input k=v` }
+  return { inputs: { ...provided, [target.name]: positional } }
+}
+
+/**
+ * Required run inputs the supplied values do not cover, in declaration order.
+ * Checked before a run is started so a missing input is a command answer, not
+ * a failed run that still leaves a run-root session and journal behind.
+ * @param document - the validated workflow document.
+ * @param supplied - the resolved input values (positional folding included).
+ * @returns the required parameter names with no value; empty when complete.
+ */
+function missingRequiredInputs(
+  document: WorkflowDocument,
+  supplied: Record<string, string>,
+): string[] {
+  const missing: string[] = []
+  for (const node of document.nodes) {
+    if (node.kind !== 'input') continue
+    missing.push(...resolveRunInputs(node.params, supplied).missing)
   }
-  return { inputs: { ...provided, [single]: positional } }
+  return missing
 }
 
 /** Options the workflow command needs from plugin configuration. */
@@ -203,6 +225,41 @@ function findSavedWorkflow(options: WorkflowCommandOptions, id: string): Workflo
   const { entries } = loadMergedWorkflowCatalog(options.workflowsDir, options.builtInWorkflowsDir)
   const entry = entries.find((candidate) => candidate.status === 'valid' && candidate.document.id === id)
   return entry?.status === 'valid' ? entry.document : undefined
+}
+
+/**
+ * The ids `/workflow run` can start, deduplicated: user documents first, then
+ * shipped ids the user catalog does not own, in merged-catalog order. Invalid
+ * files and files repeating an id already collected are skipped.
+ * @param options - resolved plugin configuration.
+ * @returns each runnable workflow id exactly once.
+ */
+function savedWorkflowIds(options: WorkflowCommandOptions): readonly string[] {
+  const { entries } = loadMergedWorkflowCatalog(options.workflowsDir, options.builtInWorkflowsDir)
+  const seen = new Set<string>()
+  const ids: string[] = []
+  for (const entry of entries) {
+    if (entry.status !== 'valid') continue
+    const { id } = entry.document
+    if (seen.has(id)) continue
+    seen.add(id)
+    ids.push(id)
+  }
+  return ids
+}
+
+/**
+ * The input hint advertised to capable clients: the command grammar plus the
+ * deduplicated saved workflow ids, so the composer's hint menu answers "which
+ * id can I run" without a `/workflow list` round-trip. The ids are a snapshot
+ * taken when the command is registered, matching the host command registry's
+ * static-hint contract.
+ * @param options - resolved plugin configuration.
+ * @returns the hint string for the command definition.
+ */
+export function workflowInputHint(options: WorkflowCommandOptions): string {
+  const ids = savedWorkflowIds(options)
+  return ids.length === 0 ? WORKFLOW_INPUT_GRAMMAR : `${WORKFLOW_INPUT_GRAMMAR} | ids: ${ids.join(', ')}`
 }
 
 /**
@@ -276,6 +333,14 @@ export async function runWorkflowCommand(
         ? withPositionalInput(document, command.inputs, command.positionalInput)
         : { inputs: command.inputs }
       if ('error' in resolved) return { kind: 'error', text: resolved.error }
+      const missing = missingRequiredInputs(document, resolved.inputs)
+      if (missing.length > 0) {
+        const hints = missing.map((name) => `--input ${name}=<value>`).join(' ')
+        return {
+          kind: 'error',
+          text: `workflow "${command.id}" is missing required run inputs: ${missing.join(', ')} — add ${hints}; a bare "<target>" fills one input only`,
+        }
+      }
       let runId: string
       try {
         ({ runId } = await options.runtime.startRun({
@@ -309,7 +374,7 @@ export function createWorkflowCommand(options: WorkflowCommandOptions): CommandD
   return {
     name: WORKFLOW_COMMAND_NAME,
     description: 'List, validate, run, or export saved xl-build workflows.',
-    input: { hint: 'run <id> ["<single input>"] [--input k=v] [--self <nodeId>] | list | validate <file> | export <id> --mermaid' },
+    input: { hint: workflowInputHint(options) },
     handler: async (invocation) => runWorkflowCommand(invocation.rawInput, options, invocation.agent),
   }
 }

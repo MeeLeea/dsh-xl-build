@@ -40,6 +40,12 @@ export interface Config {
    * tool errors are never retried; retryable codes are opted into explicitly.
    */
   retryableToolErrors: string[]
+  /**
+   * While any ask node (or an agent ask round) waits for the user, the run
+   * starts no new nodes — an interrupt. Set false to let independent branches
+   * keep scheduling while a question is open.
+   */
+  pauseWhileAsking: boolean
   /** Byte budget for one node's output preview in the client projection. */
   wirePreviewBytes: number
   /** Number of settled runs kept in the client projection. */
@@ -82,6 +88,12 @@ export const Config: Schema<Config> = Schema.object({
   scriptTimeoutMs: Schema.natural().default(120_000),
   allowedScriptRuntimes: Schema.array(Schema.union(['shell', 'ptc'])).default(['shell', 'ptc']),
   retryableToolErrors: Schema.array(Schema.string()).default([]),
+  /**
+   * While any ask node (or an agent ask round) waits for the user, the run
+   * starts no new nodes — an interrupt. Set false to let independent branches
+   * keep scheduling while a question is open.
+   */
+  pauseWhileAsking: Schema.boolean().default(true),
   wirePreviewBytes: Schema.natural().default(2_048),
   recentRuns: Schema.natural().default(5),
   persistRuns: Schema.boolean().default(true),

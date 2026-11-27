@@ -140,6 +140,32 @@ export const SubworkflowNodeSchema = z.strictObject({
   inputs: z.record(z.string(), z.string()).default({}),
 })
 
+/** One selectable answer of an ask node question. */
+export const AskOptionSpecSchema = z.strictObject({
+  label: z.string().min(1),
+  description: z.string().optional(),
+})
+export type AskOptionSpec = z.infer<typeof AskOptionSpecSchema>
+
+/** One question an ask node puts to the run's initiating user. */
+export const AskQuestionSpecSchema = z.strictObject({
+  /** Answer id downstream conditions and templates read; defaults to q1, q2, ... */
+  id: z.string().min(1).optional(),
+  /** The question text; a template so it can cite earlier node results. */
+  question: TemplateSchema,
+  header: z.string().optional(),
+  /** Answer choices; absent lets the user answer free-form. */
+  options: z.array(AskOptionSpecSchema).min(1).optional(),
+})
+export type AskQuestionSpec = z.infer<typeof AskQuestionSpecSchema>
+
+export const AskNodeSchema = z.strictObject({
+  ...BaseNodeShape,
+  kind: z.literal('ask'),
+  /** Questions the node asks the user; execution waits for every answer. */
+  questions: z.array(AskQuestionSpecSchema).min(1),
+})
+
 export const OutputNodeSchema = z.strictObject({
   ...BaseNodeShape,
   kind: z.literal('output'),
@@ -162,6 +188,7 @@ export const WorkflowNodeSchema = z.discriminatedUnion('kind', [
   JoinNodeSchema,
   LoopNodeSchema,
   SubworkflowNodeSchema,
+  AskNodeSchema,
   OutputNodeSchema,
   NoteNodeSchema,
 ])

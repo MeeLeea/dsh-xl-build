@@ -44,3 +44,4 @@ lib/
 .acl-recovery/
 .session-*.journal.jsonl
 %SystemDrive%/
+_analysis/

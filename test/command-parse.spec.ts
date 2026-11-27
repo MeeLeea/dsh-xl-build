@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { parseCommand, runWorkflowCommand } from '../src/host/commands/workflow.ts'
+import { createWorkflowCommand, parseCommand, runWorkflowCommand, workflowInputHint } from '../src/host/commands/workflow.ts'
 import type { WorkflowRunRuntime } from '../src/host/workflow/run.ts'
 import { parseWorkflowDocument } from '../src/host/workflow/domain.ts'
 import { loadWorkflowDirectory, parseWorkflowText } from '../src/host/workflow/loaders.ts'
@@ -56,6 +56,29 @@ const TWO_PARAM_YAML = [
   '  - kind: output',
   '    id: done',
   '    value: "{{input.version}} {{input.channel}}"',
+  'edges:',
+  '  - id: e1',
+  '    from: start',
+  '    to: done',
+  '    kind: flow',
+].join('\n')
+
+const MIXED_YAML = [
+  'schemaVersion: 1',
+  'id: mixed',
+  'name: Mixed inputs',
+  'entry: start',
+  'nodes:',
+  '  - kind: input',
+  '    id: start',
+  '    params:',
+  '      - name: goal',
+  '        required: true',
+  '      - name: label',
+  '        default: ""',
+  '  - kind: output',
+  '    id: done',
+  '    value: "{{input.goal}} {{input.label}}"',
   'edges:',
   '  - id: e1',
   '    from: start',
@@ -274,7 +297,7 @@ describe('runWorkflowCommand', () => {
       startRun: async () => { throw new Error('engine wiring failed') },
     }
     const initiator = { id: 'initiator-1', followup: () => {} } as Agent
-    const result = await runWorkflowCommand('run release', { workflowsDir: dir, runtime }, initiator)
+    const result = await runWorkflowCommand('run release --input version=2', { workflowsDir: dir, runtime }, initiator)
     expect(result).toMatchObject({ kind: 'error', text: expect.stringContaining('engine wiring failed') })
   })
 
@@ -306,18 +329,46 @@ describe('runWorkflowCommand', () => {
     expect(calls[0]?.inputs).toEqual({ version: '2.0' })
   })
 
-  it('refuses a positional goal when the inputs are exhausted or ambiguous', async () => {
+  it('fills the first required input and names the still-missing ones before starting', async () => {
     const dir = workflowsDir()
     writeFileSync(join(dir, 'release.yml'), GOOD_YAML)
     writeFileSync(join(dir, 'two.yml'), TWO_PARAM_YAML)
-    const runtime: WorkflowRunRuntime = { startRun: async () => ({ runId: 'unused' }) }
+    const inputs: Record<string, string>[] = []
+    const runtime: WorkflowRunRuntime = {
+      startRun: async ({ inputs: captured }) => { inputs.push(captured); return { runId: 'unused' } },
+    }
     const initiator = { id: 'initiator-1', followup: () => {} } as Agent
 
     const exhausted = await runWorkflowCommand('run release "2.0" --input version=3', { workflowsDir: dir, runtime }, initiator)
     expect(exhausted).toMatchObject({ kind: 'error', text: expect.stringContaining('declares no unfilled run input') })
+    expect(inputs).toHaveLength(0)
 
-    const ambiguous = await runWorkflowCommand('run two "x"', { workflowsDir: dir, runtime }, initiator)
-    expect(ambiguous).toMatchObject({ kind: 'error', text: expect.stringContaining('ambiguous') })
+    const positional = await runWorkflowCommand('run two "x" --input channel=beta', { workflowsDir: dir, runtime }, initiator)
+    expect(positional).toEqual({ kind: 'success', text: 'started run unused for two' })
+    expect(inputs).toEqual([{ version: 'x', channel: 'beta' }])
+
+    const incomplete = await runWorkflowCommand('run two "x"', { workflowsDir: dir, runtime }, initiator)
+    expect(incomplete).toMatchObject({ kind: 'error', text: expect.stringContaining('missing required run inputs: channel') })
+    expect(incomplete.text).toContain('--input channel=<value>')
+    expect(inputs).toEqual([{ version: 'x', channel: 'beta' }]) // the incomplete run never reaches the runtime
+  })
+
+  it('prefers required inputs for the positional goal and falls back to the first declared optional', async () => {
+    const dir = workflowsDir()
+    writeFileSync(join(dir, 'mixed.yml'), MIXED_YAML)
+    const inputs: Record<string, string>[] = []
+    const runtime: WorkflowRunRuntime = {
+      startRun: async ({ inputs: captured }) => { inputs.push(captured); return { runId: 'run-2' } },
+    }
+    const initiator = { id: 'initiator-1', followup: () => {} } as Agent
+
+    const toGoal = await runWorkflowCommand('run mixed "ship it"', { workflowsDir: dir, runtime }, initiator)
+    expect(toGoal).toEqual({ kind: 'success', text: 'started run run-2 for mixed' })
+    expect(inputs[0]).toEqual({ goal: 'ship it' })
+
+    const toLabel = await runWorkflowCommand('run mixed "nightly" --input goal=x', { workflowsDir: dir, runtime }, initiator)
+    expect(toLabel).toEqual({ kind: 'success', text: 'started run run-2 for mixed' })
+    expect(inputs[1]).toEqual({ goal: 'x', label: 'nightly' })
   })
 
   it('exports a saved workflow as mermaid', async () => {
@@ -327,5 +378,64 @@ describe('runWorkflowCommand', () => {
     expect(exported).toMatchObject({ kind: 'success', text: expect.stringContaining('flowchart TD') })
     expect(exported.text).toContain('start')
     expect(exported.text).toContain('done')
+  })
+})
+describe('workflowInputHint', () => {
+  it('appends the deduplicated saved ids to the grammar', () => {
+    const dir = workflowsDir()
+    writeFileSync(join(dir, 'release.yml'), GOOD_YAML)
+    writeFileSync(join(dir, 'release.json'), JSON.stringify({
+      schemaVersion: 1,
+      id: 'release',
+      name: 'Release twin',
+      entry: 'start',
+      nodes: [{ kind: 'note', id: 'start', text: 'x' }],
+      edges: [],
+    }))
+    writeFileSync(join(dir, 'two.yml'), TWO_PARAM_YAML)
+
+    const hint = workflowInputHint({ workflowsDir: dir })
+    expect(hint).toBe('run <id> ["<target>"] [--input k=v] [--self <nodeId>] | list | validate <file> | export <id> --mermaid | ids: release, two')
+  })
+
+  it('keeps the bare grammar when nothing valid is saved', () => {
+    const dir = workflowsDir()
+    writeFileSync(join(dir, 'broken.yaml'), 'schemaVersion: 1\nid: broken\n')
+
+    expect(workflowInputHint({ workflowsDir: dir }))
+      .toBe('run <id> ["<target>"] [--input k=v] [--self <nodeId>] | list | validate <file> | export <id> --mermaid')
+  })
+
+  it('deduplicates shipped ids and keeps a shadowed id once', () => {
+    const shippedYaml = GOOD_YAML.replace('id: release', 'id: shipped')
+    const userDir = workflowsDir()
+    writeFileSync(join(userDir, 'shipped.yml'), shippedYaml)
+    const builtInDir = workflowsDir()
+    writeFileSync(join(builtInDir, 'dup.json'), JSON.stringify({
+      schemaVersion: 1,
+      id: 'shipped',
+      name: 'JSON twin',
+      entry: 'start',
+      nodes: [{ kind: 'note', id: 'start', text: 'x' }],
+      edges: [],
+    }))
+    writeFileSync(join(builtInDir, 'zdup.yml'), shippedYaml)
+
+    const shadowed = workflowInputHint({ workflowsDir: userDir, builtInWorkflowsDir: builtInDir })
+    expect(shadowed).toContain('| ids: shipped')
+    expect(shadowed.match(/shipped/g)).toHaveLength(1)
+
+    const shipped = workflowInputHint({ workflowsDir: workflowsDir(), builtInWorkflowsDir: builtInDir })
+    expect(shipped).toContain('| ids: shipped')
+    expect(shipped.match(/shipped/g)).toHaveLength(1)
+  })
+
+  it('advertises the ids in the registered command hint', () => {
+    const dir = workflowsDir()
+    writeFileSync(join(dir, 'release.yml'), GOOD_YAML)
+
+    const command = createWorkflowCommand({ workflowsDir: dir })
+    expect(command.input?.hint).toBe(workflowInputHint({ workflowsDir: dir }))
+    expect(command.input?.hint).toContain('| ids: release')
   })
 })

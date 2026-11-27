@@ -9,7 +9,7 @@
 1. 建目录：`<dsh 启动目录>/workflows/`。扫描器不会替你创建它，目录不存在时 `/workflow list` 只回答 `No workflows are saved.`
 2. 写一个文档文件，扩展名 `.json` / `.yml` / `.yaml`，放在该目录第一层。填齐必填项：`schemaVersion`、`id`、`name`、`entry`、`nodes`、`edges`。
 3. 校验：`/workflow validate workflows/<file>`。通过时回答 `Valid: <id> (n nodes, m edges)`；失败时逐条列出 `V<n>: <原因>`。
-4. 试跑：`/workflow run <id> "<唯一输入>"`（多输入文档改用 `--input k=v`）。命令立刻回答 `started run <runId> for <id>`，Run 在独立根会话里执行，结束时向发起会话发 follow-up。
+4. 试跑：`/workflow run <id> "<target>"`。位置参数填进文档里第一个未提供的必填输入（全填齐时取第一个未填的声明输入）；其余必填输入仍需 `--input k=v`，缺了会先报错并列出该补的 `--input`，不会启动 Run。命令立刻回答 `started run <runId> for <id>`，Run 在独立根会话里执行，结束时向发起会话发 follow-up。
 5. 复核：`/workflow list` 看清单、`/workflow export <id> --mermaid` 核对拓扑，侧栏看板看节点状态与产物。
 
 ## 目录与文件约定
@@ -39,7 +39,7 @@
 每个节点都有的通用字段：
 
 - **`id`**（string，必填）—— 节点标识，命名规则同工作流 id，文档内唯一（V1）。
-- **`kind`**（枚举，必填）—— `input` / `agent` / `script` / `tool` / `router` / `join` / `loop` / `subworkflow` / `output` / `note`。
+- **`kind`**（枚举，必填）—— `input` / `agent` / `script` / `tool` / `router` / `join` / `loop` / `subworkflow` / `output` / `note` / `ask`。
 - **`timeoutMs`**（正整数，可选）—— 单节点墙钟预算；**当前引擎未接线**，见「当前实现状态」。
 - **`maxAttempts`**（≥1 整数，可选）—— 单节点尝试上限；**当前引擎未接线**，实际用 `defaults.maxAttempts`。
 
@@ -57,6 +57,7 @@
 - **`self`**（boolean，默认 `false`）—— 为 `true` 时子激活挂在发起会话而不是 Run 根会话，用户可继续对话；此时 `context` 不能是 `none`（V16）。运行时也可用 `--self <nodeId>` 指定某节点按此处理。
 - **`outputSchema`**（object，可选）—— 仅用于让下游 `json` 边通过 V12；运行期是否返回结构化结果取决于 **agent 定义文件**里的 `outputSchema`。
 - 输出：有结构化结果时是对象，否则是文本。子激活非 `completed` 结束即节点失败（Run 被中止时归为 `timeout`）。
+- **主动询问**：宿主有问答服务且 agent 定义无 `outputSchema` 时，任务文本自动附加 xl-ask 文本协议——模型在信息不足时自己输出围栏块提问、带逐题答复重跑（见「LLM 主动询问」）；有 `outputSchema` 的 agent 走其结构化 ask 字段，两条通道共用同一回路。
 
 ### `script` —— 跑一段命令
 
@@ -113,6 +114,24 @@
 
 - **`text`**（string，必填）—— 纯说明文字。
 - 既不允许入边也不允许出边（V4），只为可读性存在。
+
+### `ask` —— 暂停并向用户提问
+
+- **`questions`**（数组，必填，≥1）—— 每个问题：`question`（**模板**，必填，可引用 `{{input.*}}` / `{{nodes.*}}`）、`id`（可选，缺省 `q1`…`qN`，是答复映射的键）、`header`（可选，弹窗标题）、`options`（可选，≥1 项，每项 `label` 必填 + `description` 可选，给出即渲染成可点选项，缺省为自由文本输入）。
+- 运行到该节点时，问题经宿主用户问答服务以 QuestionCards **弹窗**呈现给发起人，Run 挂起等待答复（interrupt 语义：等待期间不再启动新节点；`cordis.yml` 设 `pauseWhileAsking: false` 可让无关兄弟节点继续跑）。
+- 节点输出是对象：`{ answers, selected, text }`；`selected` 为 `{ <问题id>: <选中 label 以「；」连接> }`。模板里用 `{{nodes.<id>.text}}` 读答复全文；router 用 `{"var": "nodes.<id>.selected.<qid>"}` 按答复分流。
+- 等待与答复期间各发一条 node-delta 快照，面板节点预览实时显示「等待用户答复: …」与答复块。
+- 宿主未装配用户问答服务时该节点确定性失败（`ask node "<id>" has no ask channel`）。
+
+### LLM 主动询问 —— agent 节点的 xl-ask 文本协议
+
+`ask` 节点是显式编排的提问位；不想预留提问位时，任何 `agent` 节点也能让**模型自己**在信息不足时发起询问，不需要额外节点：
+
+- **触发条件**：宿主装配了用户问答服务，且 agent 定义没有 `outputSchema`（有结构化输出的 agent 走自己的结构化 ask 字段，如 `agents/cmodel-designer.yml`）。满足时任务文本末尾自动附加 `[ask 通道]` 协议说明，教模型缺信息时不要猜、只输出一个 xl-ask 围栏块。
+- **块格式**：`xl-ask` 围栏内是一段 JSON——问题数组 `[{...}]`、`{ "questions": [...] }` 或旧式 `{ "prompt": ..., "choices": [...] }`；问题字段同 ask 节点的 `questions`（`question` 必填，`id` / `header` / `options` 可选，缺省 id 为 `q1`…`qN`）。块外的正文照常输出，但不会被下游看到。
+- **中继与重跑**：块解析后同样经 QuestionCards 弹窗给发起 Run 的人，interrupt 语义与 `pauseWhileAsking` 同 ask 节点；答复逐题追加回任务文本，同一节点重跑，上限 `maxAskRounds`（默认 3 轮）。
+- **结算**：轮次耗尽时围栏块从结算输出里剥离，下游模板/router 拿到的是去块后的正文；等待期间面板节点预览显示「等待用户答复: …」。
+- **无问答服务的宿主**：不附加协议、不中继，输出原样透传。
 
 ## 边字段
 
@@ -290,12 +309,20 @@ schema 接受、但引擎当前不消费或直接失败的字段/路径，写工
 
 本目录随附示例工作流 `xl-build-pipeline`：`input(goal)` → `manager` 出执行计划 → `worker` 与 `scripting-engineer` 并行实现 → `join` 汇总 → `reviewer` 只读复核 → `output`。`xl-build-pipeline.yml` 与 `xl-build-pipeline.json` 内容逐字段一致，`xl-build-pipeline.py` 是 Python DSL 源码（目录扫描不识别 `.py`，须先编译）。四个 `agent` 引用（`manager` / `worker` / `reviewer` / `scripting-engineer`）都是包内置定义，无需额外配置。
 
+本目录还随附内置工作流 `cmodel-chip-pipeline`：`input(requirement)` → `cmodel-designer` 设计（实现细节经引擎 ask 回路向发起会话的用户提问，答复编回节点重跑并落入 facts；无 ask 通道或多轮未获答复时回退 report-ask 报告）→ `scaffold` 脚本节点把 `resourcesRoot/demo/` 脚手架拷贝为工作目录下的工程目录（芯粒名目录，chiplet 为空时 `demo/`），并清理 `inc/*`、删除 `build/` → `cmodel-implementer → cmodel-builder` 修正循环（构建未通过回带反馈重跑，3 轮）→ `cmodel-reviewer` QA 终局核验（未通过走报告输出）→ `input.pack=yes` 时 `cmodel-packer` 打包 → 输出（含仿真 stdout）。产出目录约定：报告类文件（设计文档、构建/运行报告、评审结论、打包清单）一律写 `<工作目录>/doc/`；工程文件写 `<工作目录>/<芯粒名>/`。五个 `agent` 引用均为包内置定义；`resourcesRoot` 指向含 `templates/` 与 `demo/` 的 Skill-sc_model 目录绝对路径（必填）；`cmodel-orchestrator` 不入图，派发由本图拓扑承担。可选输入：`chiplet`（芯粒名，空则 agent 自行取名/推断）、`need_driver`（非空时 designer/implementer 直接采用，不输出 ask）、`pack`（`yes` 时打包）。`scaffold` 的脚本是 PowerShell（win32 的 `ctx.shell` 即 `pwsh -Command`）；脚本节点命令原文不做模板渲染，resourcesRoot 与芯粒名经入边模板走 `stdin: edges` 传入。
+
+| 命令 | 作用 |
+| --- | --- |
+| `/workflow validate <插件目录>/workflow/cmodel-chip-pipeline.yml` | 校验该文档；通过回答 `Valid: cmodel-chip-pipeline (15 nodes, 17 edges)` |
+| `/workflow run cmodel-chip-pipeline "<芯粒与需求>"` | 运行流水线；唯一必填输入是 `requirement`（位置参数即它）。resourcesRoot、chiplet、need_driver、pack 等实现细节不再经命令配置：designer 推断不出时经 ask 在发起会话提问，用户作答后引擎把答复编回该节点重跑；无 ask 通道时回退 report-ask 报告输出 |r=TRUE`、`--input pack=yes`（只给位置参数时会先报错提示补 `--input resourcesRoot=<value>`） |
+| `/workflow export cmodel-chip-pipeline --mermaid` | 输出该工作流的 mermaid 拓扑 |
+
 运行前提：无需配置——本目录作为内置工作流目录随包加载，`run` / `list` / `export` 在用户目录之外自动回落到这里（用户目录同 id 的文档覆盖内置版本，见「目录与文件约定」）。`validate` 按文件路径校验，路径相对 `dsh` 进程工作目录解析，示例路径按实际安装位置调整前缀。
 
 | 命令 | 作用 |
 | --- | --- |
 | `/workflow validate <插件目录>/workflow/xl-build-pipeline.yml` | 校验一个文档文件；通过回答 `Valid: xl-build-pipeline (7 nodes, 7 edges)`，失败逐条列出 `V<n>: <原因>`。`.json` 产物同理 |
-| `/workflow run xl-build-pipeline "<目标>"` | 按文档 `id` 运行；位置参数填进文档里唯一未填的声明输入（这里等价 `--input goal=<目标>`），多输入文档用 `--input k=v`。命令立即返回 `started run <runId> for <id>`，结束时向发起会话发 follow-up |
+| `/workflow run xl-build-pipeline "<目标>"` | 按文档 `id` 运行；位置参数填进第一个未提供的必填输入（这里等价 `--input goal=<目标>`），其余输入用 `--input k=v`。命令立即返回 `started run <runId> for <id>`，结束时向发起会话发 follow-up |
 | `/workflow run xl-build-pipeline "<目标>" --self plan` | 加 `--self <nodeId>` 后该节点挂在发起会话执行，用户可继续对话 |
 | `/workflow list` | 列出 `workflowsDir` 下全部文档（`- <id>: <name> (n nodes, m edges)`）；坏文件显示 `invalid — <错误>`，不影响其它文件 |
 | `/workflow export xl-build-pipeline --mermaid` | 输出该工作流的 mermaid 拓扑 |

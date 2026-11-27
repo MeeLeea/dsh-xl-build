@@ -26,7 +26,7 @@ import { XL_EVENTS, type NodeEndPayload, type NodeErrorPayload } from './events.
 import { createXlBuildProjection } from './projection.ts'
 import { loadMergedWorkflowCatalog, resolveBuiltInWorkflowsDir, readBuiltInWorkflowCatalog } from './workflow/builtins.ts'
 import { createMemoryCurator, readMemory, runDigestText, type MemoryCurator } from './workflow/memory.ts'
-import { createRunArtifactStore, runNoticeText, startWorkflowRun, type WorkflowRunLimits, type WorkflowRunRuntime, type WorkflowRunServices } from './workflow/run.ts'
+import { createRunArtifactStore, runNoticeText, startWorkflowRun, type AgentAskQuestion, type WorkflowRunLimits, type WorkflowRunRuntime, type WorkflowRunServices } from './workflow/run.ts'
 import { createShellScriptExecutor } from './workflow/script-exec.ts'
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
@@ -76,6 +76,8 @@ function createWorkflowRunRuntime(inputs: WorkflowRunRuntimeInputs): WorkflowRun
     scriptTimeoutMs: config.scriptTimeoutMs,
     allowedScriptRuntimes: config.allowedScriptRuntimes,
     retryableToolErrors: config.retryableToolErrors,
+    // While an ask waits for the user, the run holds all new node starts.
+    pauseWhileAsking: config.pauseWhileAsking,
     // The engine truncates preview snapshots to the same budget the wire
     // view applies, so journal and session records never grow past it.
     previewBudgetBytes: config.wirePreviewBytes,
@@ -123,6 +125,22 @@ function createWorkflowRunRuntime(inputs: WorkflowRunRuntimeInputs): WorkflowRun
         meta: { cwd: runRootCwd },
       })
       const runRoot = runRootHandle.agent
+      // The ask relay is structural: this plugin does not depend on the
+      // user-questions package, so the service is discovered by name and the
+      // ask port is only bound when the host actually provides one. A host
+      // without it keeps the legacy pass-through ask behavior.
+      const askService = ctx.get('userQuestions') as {
+        ask(request: {
+          readonly questions: readonly {
+            readonly id: string
+            readonly question: string
+            readonly header?: string
+            readonly options?: readonly { readonly label: string, readonly description?: string }[]
+          }[]
+          readonly agent: unknown
+          readonly signal?: AbortSignal
+        }): Promise<{ readonly answers: readonly { readonly id: string, readonly selected: readonly string[], readonly custom?: string }[] }>
+      } | undefined
       // A dormant run-root never runs a step, so the pre-step catalog
       // handler never fires for it. Seed the catalog here so the `xlBuild`
       // projection carries a non-empty value from the first record onward
@@ -205,6 +223,24 @@ function createWorkflowRunRuntime(inputs: WorkflowRunRuntimeInputs): WorkflowRun
             return undefined
           }
         },
+        // Interactive ask rounds: an agent node whose structured output asks
+        // questions relays them to the initiating session's composer card,
+        // waits for the user's answers, and the engine re-runs the node with
+        // the answers appended. The initiator is the live root that accepted
+        // the /workflow command, which is exactly the agent ask() scopes to.
+        ...(askService !== undefined ? {
+          askUser: (questions: readonly AgentAskQuestion[], signal: AbortSignal) =>
+            askService.ask({
+              questions: questions.map((question) => ({
+                id: question.id,
+                question: question.question,
+                ...(question.header !== undefined ? { header: question.header } : {}),
+                ...(question.options !== undefined ? { options: [...question.options] } : {}),
+              })),
+              agent: initiator,
+              signal,
+            }).then((answer) => answer.answers),
+        } : {}),
       }
       const handle = startWorkflowRun<Agent>({
         document,

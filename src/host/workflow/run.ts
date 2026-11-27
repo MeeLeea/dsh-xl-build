@@ -65,6 +65,177 @@ export type XlRecordPayload = PluginRecordMap[XlEventType]
 const NODE_PROGRESS_INTERVAL_MS = 5_000
 /** Default byte budget for the preview snapshots this engine records. */
 const NODE_PREVIEW_BUDGET_BYTES = 2_048
+/** Default cap on interactive ask rounds one agent node may spend. */
+const DEFAULT_MAX_ASK_ROUNDS = 3
+
+/** One selectable answer of an ask question. */
+export interface AgentAskOption {
+  /** User-facing label. */
+  readonly label: string
+  /** Optional extra context rendered by capable UIs. */
+  readonly description?: string
+}
+
+/** One clarifying question an agent node relayed to the run initiator. */
+export interface AgentAskQuestion {
+  /** Stable question id; the answer echoes it. */
+  readonly id: string
+  /** The question to display. */
+  readonly question: string
+  /** Optional short heading rendered with the question. */
+  readonly header?: string
+  /** Optional selectable answers; absent means free text. */
+  readonly options?: readonly AgentAskOption[]
+}
+
+/** One answered question. */
+export interface AgentAskAnswer {
+  /** The answered question id. */
+  readonly id: string
+  /** Selected option labels. */
+  readonly selected: readonly string[]
+  /** Optional free-text answer. */
+  readonly custom?: string
+}
+
+/** Record guard reused by the ask-shape normalizers below. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Normalize one ask option list: 'options: [{ label, description? }]' or the
+ * legacy 'choices: [{ id?, label? }]' shape, where a missing label falls back
+ * to id. Returns undefined when no usable label exists.
+ */
+function askOptions(source: unknown): readonly AgentAskOption[] | undefined {
+  if (!Array.isArray(source)) return undefined
+  const options: AgentAskOption[] = []
+  for (const item of source) {
+    if (!isRecord(item)) continue
+    const label = typeof item.label === 'string' && item.label !== ''
+      ? item.label
+      : typeof item.id === 'string' && item.id !== '' ? item.id : undefined
+    if (label === undefined) continue
+    const option: AgentAskOption = {
+      label,
+      ...(typeof item.description === 'string' ? { description: item.description } : {}),
+    }
+    options.push(option)
+  }
+  return options.length === 0 ? undefined : options
+}
+
+/**
+ * Extract the questions one agent node's structured ask output asks the user.
+ * Two shapes are accepted: 'ask: { questions: [{ id?, question, header?,
+ * options? | choices? }] }' (preferred, one entry per question) and the legacy
+ * single-question 'ask: { prompt, choices }' form. Non-objects, an ask without
+ * usable questions, and plain-text outputs all return undefined, so a host
+ * without an ask relay simply never enters the round-trip.
+ * @param output - the node activation's settled structured output.
+ * @returns the normalized questions, or undefined when it asks none.
+ */
+export function agentAskQuestions(output: unknown): readonly AgentAskQuestion[] | undefined {
+  if (!isRecord(output)) return undefined
+  const ask = output.ask
+  if (!isRecord(ask)) return undefined
+  return normalizeAskQuestions(ask)
+}
+
+/**
+ * Normalize one ask description into questions shared by both ask channels:
+ * the structured ask field of an agent output schema and the xl-ask fenced
+ * JSON block of the text protocol.
+ */
+function normalizeAskQuestions(ask: Record<string, unknown>): readonly AgentAskQuestion[] | undefined {
+  const questions: AgentAskQuestion[] = []
+  if (Array.isArray(ask.questions)) {
+    ask.questions.forEach((item, index) => {
+      if (!isRecord(item)) return
+      const question = typeof item.question === 'string' && item.question !== ''
+        ? item.question
+        : typeof item.prompt === 'string' && item.prompt !== '' ? item.prompt : undefined
+      if (question === undefined) return
+      const options = askOptions(item.options) ?? askOptions(item.choices)
+      const header = typeof item.header === 'string' && item.header !== '' ? item.header : undefined
+      questions.push({
+        id: typeof item.id === 'string' && item.id !== '' ? item.id : 'q' + (index + 1),
+        question,
+        ...(header !== undefined ? { header } : {}),
+        ...(options !== undefined ? { options } : {}),
+      })
+    })
+  }
+  if (questions.length === 0 && typeof ask.prompt === 'string' && ask.prompt !== '') {
+    const options = askOptions(ask.choices)
+    questions.push({
+      id: 'ask',
+      question: ask.prompt,
+      ...(options !== undefined ? { options } : {}),
+    })
+  }
+  return questions.length === 0 ? undefined : questions
+}
+
+/** Matches one xl-ask fenced JSON block inside an agent text output. */
+const ASK_BLOCK_PATTERN = /```xl-ask[^\n]*\n([\s\S]*?)```/
+
+/**
+ * Task suffix every schema-less agent node receives when the host has an
+ * ask port: it teaches the model to ask instead of guessing. Agents that
+ * declare their own output schema keep the structured ask channel instead
+ * (see the cmodel designer); appending both would invite conflict.
+ */
+const AGENT_ASK_PROTOCOL_TEXT = [
+  '[ask 通道] 如果缺少完成任务所必需的信息、或存在必须由人决定的歧义，不要猜测，也不要编造：本轮只输出下面这种围栏块（除此之外不要输出任何内容）:',
+  '```xl-ask',
+  '{"questions": [{"id": "q1", "question": "要问的问题", "header": "可选的标题", "options": [{"label": "选项一"}, {"label": "选项二"}]}]}',
+  '```',
+  '问题会弹窗给发起运行的用户；答复后本任务会带着逐题答复重新执行。一次只问最关键的少数问题；信息足够时直接输出最终结果，绝不要输出该块。',
+].join('\n')
+
+/**
+ * Extract the questions an agent asked through the text protocol: one
+ * xl-ask fenced block whose JSON body is a questions array, a
+ * { questions: [...] } object, or the legacy { prompt, choices } form.
+ * @param text - the activation settled text output.
+ * @returns the normalized questions plus the output with the block removed,
+ *   or undefined when the text asks nothing usable.
+ */
+export function textAskQuestions(text: string): { questions: readonly AgentAskQuestion[], cleaned: string } | undefined {
+  const match = ASK_BLOCK_PATTERN.exec(text)
+  if (match === null) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(match[1] ?? '')
+  } catch {
+    return undefined
+  }
+  const ask = Array.isArray(parsed) ? { questions: parsed } : isRecord(parsed) ? parsed : undefined
+  if (ask === undefined) return undefined
+  const questions = normalizeAskQuestions(ask)
+  if (questions === undefined) return undefined
+  const cleaned = (text.slice(0, match.index) + text.slice(match.index + match[0].length)).trim()
+  return { questions, cleaned }
+}
+
+/**
+ * Render one ask round's answers as task text the re-run activation reads:
+ * each question with its chosen labels and free-text answer, so the child
+ * treats them as settled facts rather than re-deriving them.
+ */
+function askAnswersText(questions: readonly AgentAskQuestion[], answers: readonly AgentAskAnswer[]): string {
+  const lines: string[] = []
+  for (const question of questions) {
+    const answer = answers.find((item) => item.id === question.id)
+    const chosen = answer === undefined ? [] : [...answer.selected]
+    if (answer?.custom !== undefined && answer.custom !== '') chosen.push('（补充）' + answer.custom)
+    lines.push('Q: ' + question.question)
+    lines.push(chosen.length === 0 ? 'A: （用户未作答复）' : 'A: ' + chosen.join('；'))
+  }
+  return lines.join('\n')
+}
 
 /** Live progress figures for one running agent child. */
 export interface NodeProgress {
@@ -86,6 +257,14 @@ function progressPreviewText(progress: NodeProgress): string {
 function finalPreviewText(output: unknown, budgetBytes: number): string {
   const text = typeof output === 'string' ? output : JSON.stringify(output, null, 2) ?? ''
   return truncatePreview(text, budgetBytes).text
+}
+
+/**
+ * Render an ask round's questions as the node's preview text: that is what
+ * the node shows the user while it waits for the answers.
+ */
+function askWaitingPreviewText(questions: readonly AgentAskQuestion[]): string {
+  return questions.map((question) => '等待用户答复: ' + question.question).join('\n')
 }
 
 /** The durable-record writer the composition root binds to the run session. */
@@ -141,6 +320,13 @@ export interface WorkflowRunServices<P> {
    * disables live node previews (the host has no usable source).
    */
   readonly readNodeProgress?: (childId: string) => NodeProgress | undefined
+  /**
+   * Relay one ask round to the run initiator's user and wait for the answers.
+   * Absent makes ask-shaped structured outputs pass through unchanged, so
+   * workflows that split ask outputs through a router keep working on hosts
+   * without an ask relay (the harness user-questions service).
+   */
+  readonly askUser?: (questions: readonly AgentAskQuestion[], signal: AbortSignal) => Promise<readonly AgentAskAnswer[]>
 }
 
 /** Run-level budgets the engine applies on top of the document's defaults. */
@@ -155,6 +341,13 @@ export interface WorkflowRunLimits {
   readonly progressIntervalMs?: number
   /** Byte budget for the preview snapshots the engine records. */
   readonly previewBudgetBytes?: number
+  /** Ask rounds one agent node may spend before its ask output passes through. */
+  readonly maxAskRounds?: number
+  /**
+   * While any ask node waits for the user, the run starts no new nodes — an
+   * interrupt. Set false to let independent branches keep scheduling in parallel.
+   */
+  readonly pauseWhileAsking?: boolean
 }
 
 /** One workflow run request. */
@@ -367,6 +560,8 @@ class WorkflowRun<P> {
   private readonly artifacts: ArtifactRef[] = []
   private readonly failures: { nodeId: string, message: string }[] = []
   private stepsExecuted = 0
+  /** Ask rounds (agent nodes and ask nodes) waiting for the user right now. */
+  private pendingAsks = 0
   private inputs: Record<string, unknown> = {}
   /** The workflow's memory, read once in `start()` before the graph runs. */
   private memory = ''
@@ -520,6 +715,19 @@ class WorkflowRun<P> {
       })
       for (const [id, status] of step.statuses) scope.statuses.set(id, status)
       if (step.settlement.settled) return
+      // Interrupt: while an ask node waits for the user, the run starts no
+      // new nodes. Running activations finish; the graph holds until the
+      // answers arrive. Only a scope with an active node can hold (the ask
+      // itself is active), so this never spins without awaiting.
+      const holding = this.pendingAsks > 0
+        && this.options.limits.pauseWhileAsking !== false
+        && scope.active.size > 0
+      if (holding) {
+        // Skip the start selection entirely; the settle check below is
+        // unreachable here, so await the active ask (or siblings) directly.
+        await Promise.race([...scope.active.values()])
+        continue
+      }
       if (this.stepsExecuted >= this.options.limits.maxSteps) {
         throw new Error(`run exceeded maxSteps (${this.options.limits.maxSteps})`)
       }
@@ -707,6 +915,8 @@ class WorkflowRun<P> {
         const artifacts = artifact === undefined ? [] : [artifact]
         return { output: outcome.output, artifacts }
       }
+      case 'ask':
+        return { output: await this.runAskNode(node, frame), artifacts: [] }
       case 'router': {
         const outcome = executeDeterministicNode(node, frame)
         if (outcome === undefined || outcome.status !== 'completed' || outcome.nextNode === undefined) {
@@ -731,7 +941,15 @@ class WorkflowRun<P> {
     }
   }
 
-  /** Run one agent activation through the shared runner. */
+  /**
+   * Run one agent node: activations plus interactive ask rounds. A structured
+   * output that asks the user questions (see {@link agentAskQuestions}) or a
+   * schema-less model's own xl-ask text block (see {@link textAskQuestions})
+   * relays through the host ask port, and the activation re-runs with the answers
+   * appended to its task, so the child treats them as settled facts. Hosts
+   * without an ask port, exhausted rounds, and outputs that ask nothing all
+   * settle on the pass-through behavior routers already split on.
+   */
   private async runAgentNode(
     node: WorkflowNode & { kind: 'agent' },
     frame: TemplateFrame,
@@ -746,9 +964,88 @@ class WorkflowRun<P> {
         ? inbound.slice(-node.context.lastMessages)
         : inbound
     const taskComposed = composeNodeInput(this.agentOwnText(node, frame), taskInbound)
+    const askUser = this.options.services.askUser
+    const maxAskRounds = this.options.limits.maxAskRounds ?? DEFAULT_MAX_ASK_ROUNDS
+    let task = taskComposed.text
+    // Schema-less agents get the text ask protocol: the model itself decides
+    // when information is missing and asks through an xl-ask block (see
+    // {@link textAskQuestions}). Agents with an output schema keep their
+    // structured ask channel; teaching both would invite conflict.
+    if (askUser !== undefined && spec.outputSchema === undefined) {
+      task = task + '\n\n' + AGENT_ASK_PROTOCOL_TEXT
+    }
+    for (let round = 0; ; round += 1) {
+      const output = await this.runAgentActivation(node, spec, selfNode, task, askUser !== undefined)
+      const textAsk = typeof output === 'string' ? textAskQuestions(output) : undefined
+      const questions = askUser === undefined
+        ? undefined
+        : agentAskQuestions(output) ?? textAsk?.questions
+      if (questions === undefined || round >= maxAskRounds) {
+        // An exhausted or unrelayed text-ask block never settles downstream:
+        // strip it and preview the block-free text — the activation final
+        // still shows the waiting line when the round was relayed.
+        if (textAsk === undefined) return output
+        const budget = this.options.limits.previewBudgetBytes ?? NODE_PREVIEW_BUDGET_BYTES
+        await this.record(XL_EVENTS.nodeDelta, nodeDeltaRecord({
+          runId: this.runId,
+          nodeId: node.id,
+          text: finalPreviewText(textAsk.cleaned, budget),
+        }))
+        return textAsk.cleaned
+      }
+      // One interactive round: relay the questions, then re-run with the
+      // answers appended so the child sees them as settled facts.
+      const answers = await this.relayAskRound(questions)
+      task = task + '\n\n' + [
+        '用户已答复上一轮 ask 的提问，以下是逐题答复；请据此直接继续并填充结果，不要再次询问相同问题:',
+        askAnswersText(questions, answers),
+      ].join('\n')
+    }
+  }
+
+  /**
+   * Relay one ask round to the run initiator's user and await the answers.
+   * Relay failures become node errors: an aborted run times the node out,
+   * a host with no answerer (headless) fails deterministic, and anything
+   * else is transient so the document retry policy decides.
+   */
+  private async relayAskRound(questions: readonly AgentAskQuestion[]): Promise<readonly AgentAskAnswer[]> {
+    const askUser = this.options.services.askUser
+    if (askUser === undefined) {
+      throw new NodeExecutionError('deterministic', 'ask round relayed without an askUser port')
+    }
+    // Every in-flight round counts: the scheduler holds new node starts while
+    // any round waits for the user (interrupt semantics, see runGraph).
+    this.pendingAsks += 1
+    try {
+      return await askUser(questions, this.controller.signal)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (this.controller.signal.aborted) {
+        throw new NodeExecutionError('timeout', 'ask round aborted: ' + message)
+      }
+      const code = (error as { readonly code?: unknown }).code
+      const relayBroken = code === 'NO_PROVIDER' || code === 'CALLER_NOT_LIVE' || code === 'DELEGATED_CALLER'
+      throw new NodeExecutionError(
+        relayBroken ? 'deterministic' : 'transient',
+        'ask round failed: ' + message,
+      )
+    } finally {
+      this.pendingAsks -= 1
+    }
+  }
+
+  /** Run one agent activation, streaming live previews, and return its output. */
+  private async runAgentActivation(
+    node: WorkflowNode & { kind: 'agent' },
+    spec: AgentSpec,
+    selfNode: boolean,
+    task: string,
+    askCapable: boolean,
+  ): Promise<unknown> {
     const execution = await this.options.services.runner.start({
       spec,
-      task: taskComposed.text,
+      task,
       parent: selfNode ? this.options.services.initiatorParent : this.options.services.parent,
       signal: this.controller.signal,
       delivery: 'caller',
@@ -790,17 +1087,77 @@ class WorkflowRun<P> {
       const output = spec.outputSchema !== undefined && result.structured !== undefined
         ? result.structured
         : textOfBlocks(result.output)
+      // An ask-capable host that received questions — structured or through
+      // the model's own xl-ask text block — shows them while the round-trip
+      // waits for the user; every other output previews itself.
+      const questions = askCapable
+        ? agentAskQuestions(output)
+          ?? (typeof output === 'string' ? textAskQuestions(output)?.questions : undefined)
+        : undefined
       // Stop polling before the final preview: no live snapshot may land
       // after it, and the final replaces the last stats snapshot so a
       // completed node shows its real output instead of a stale progress line.
       settled = true
-      emitSnapshot(finalPreviewText(output, budget), true)
+      emitSnapshot(questions !== undefined ? askWaitingPreviewText(questions) : finalPreviewText(output, budget), true)
       await queue
       return output
     } finally {
       settled = true
       if (timer !== undefined) clearInterval(timer)
     }
+  }
+
+  /**
+   * Run one ask node: put its questions to the run's initiating user and wait.
+   *
+   * The questions are templates rendered against the current frame, so an ask
+   * can cite earlier node results ("针对 {{nodes.designer.facts.chiplet}} ...").
+   * The relay itself is the shared ask round: it counts for the scheduler's
+   * interrupt hold and maps relay failures to node errors. The node's output
+   * carries the answers three ways — the raw list, a per-question label map
+   * routers branch on, and one readable text block templates forward.
+   */
+  private async runAskNode(node: WorkflowNode & { kind: 'ask' }, frame: TemplateFrame): Promise<unknown> {
+    if (this.options.services.askUser === undefined) {
+      throw new NodeExecutionError(
+        'deterministic',
+        'ask node "' + node.id + '" has no ask channel: this host exposes no user question service',
+      )
+    }
+    const questions: AgentAskQuestion[] = node.questions.map((question, index) => ({
+      id: question.id ?? 'q' + (index + 1),
+      question: renderTemplate(question.question, frame),
+      ...(question.header !== undefined ? { header: question.header } : {}),
+      ...(question.options !== undefined
+        ? {
+            options: question.options.map((option) => ({
+              label: option.label,
+              ...(option.description !== undefined ? { description: option.description } : {}),
+            })),
+          }
+        : {}),
+    }))
+    const budget = this.options.limits.previewBudgetBytes ?? NODE_PREVIEW_BUDGET_BYTES
+    // Show what the panel holds while the round-trip waits for the user.
+    await this.record(XL_EVENTS.nodeDelta, nodeDeltaRecord({
+      runId: this.runId,
+      nodeId: node.id,
+      text: askWaitingPreviewText(questions),
+    }))
+    const answers = await this.relayAskRound(questions)
+    const text = askAnswersText(questions, answers)
+    const selected: Record<string, string> = {}
+    for (const answer of answers) {
+      selected[answer.id] = answer.selected.join('；')
+    }
+    // The settled preview is the readable answer block, truncated like every
+    // other final snapshot.
+    await this.record(XL_EVENTS.nodeDelta, nodeDeltaRecord({
+      runId: this.runId,
+      nodeId: node.id,
+      text: truncatePreview(text, budget).text,
+    }))
+    return { answers: [...answers], selected, text }
   }
 
   /** Run one script node through the script executor. */

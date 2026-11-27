@@ -2,7 +2,7 @@
 
 一个 `*.yml` / `*.yaml` / `*.json` 文件定义一个子智能体。插件启动时同步扫描一次，运行期间监视目录并以 150 ms 防抖热重载，保存即生效。
 
-本目录随包分发，装的是**内置定义**：`memory-curator.yml`（workflow 长期记忆整理）、`manager.yml`（拆解目标并派发给 worker/reviewer）、`worker.yml`（单任务实现）、`reviewer.yml`（只读评审）、`scripting-engineer.yml`（自动化脚本）。自定义 agent 请写到**用户目录**：`<dsh 启动目录>/agents`，不要直接改包内目录。
+本目录随包分发，装的是**内置定义**：`memory-curator.yml`（workflow 长期记忆整理）、`manager.yml`（拆解目标并派发给 worker/reviewer）、`worker.yml`（单任务实现）、`reviewer.yml`（只读评审）、`scripting-engineer.yml`（自动化脚本）、`architect.yml`（架构规格输出 `doc/arch_spec.md`）、`rtl-designer.yml`（RTL 编码 `src/*.v` + `scripts/syn_filelist.f`）、`rtl-verification.yml`（Vivado Xsim 验证 `test/` + `scripts/*.tcl`）、`cmodel-orchestrator.yml`（CModel 流程编排与 ask 中转）、`cmodel-designer.yml`（CModel 设计）、`cmodel-implementer.yml`（CModel 代码落地任务指定的工程目录 + 设计文档归档 `doc/`）、`cmodel-builder.yml`（构建运行 `<工程目录>/build/`，报告与仿真输出归档 `doc/`）、`cmodel-reviewer.yml`（QA 终局核验，评审结论归档 `doc/`）、`cmodel-packer.yml`（打包 `pack/`，清单归档 `doc/`）。自定义 agent 请写到**用户目录**：`<dsh 启动目录>/agents`，不要直接改包内目录。
 
 ## 创建流程
 

@@ -1,10 +1,13 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { runWorkflowCommand } from '../src/host/commands/workflow.ts'
 import type { WorkflowRunRuntime } from '../src/host/workflow/run.ts'
+import { parseWorkflowText } from '../src/host/workflow/loaders.ts'
+import { validateWorkflow } from '../src/host/workflow/validate.ts'
 import {
   BUILT_IN_WORKFLOW_MARKER,
   loadMergedWorkflowCatalog,
@@ -48,6 +51,19 @@ const SHIPPED_YAML = [
 const USER_SHADOW_YAML = SHIPPED_YAML
   .replace('id: shipped', 'id: shipped')
   .replace('name: Shipped', 'name: User override')
+
+describe('shipped workflow documents', () => {
+  it('ships cmodel-chip-pipeline as a valid document with only requirement required', () => {
+    const here = dirname(fileURLToPath(import.meta.url))
+    const shipped = readFileSync(join(here, '..', 'workflow', 'cmodel-chip-pipeline.yml'), 'utf8')
+    const document = parseWorkflowText(shipped, 'cmodel-chip-pipeline.yml')
+    // validateWorkflow folds in the graph rules (V5-V17), so this covers
+    // reachability, loops, and template references too.
+    expect(validateWorkflow(document)).toEqual([])
+    const requirement = document.nodes.find((node) => node.kind === 'input')?.params ?? []
+    expect(requirement).toEqual([{ name: 'requirement', required: true }])
+  })
+})
 
 /** A runtime stub recording every startRun call. */
 function recordingRuntime(): { runtime: WorkflowRunRuntime, calls: { id: string, name: string }[] } {
