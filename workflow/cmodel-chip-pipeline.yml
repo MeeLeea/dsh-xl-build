@@ -1,0 +1,192 @@
+schemaVersion: 1
+id: cmodel-chip-pipeline
+name: CModel chip pipeline
+description: >-
+  designer 设计（实现细节经 ask 向用户确认）→ implementer 落码 → builder 构建运行（失败回带 implementer 修正，3 轮）→
+  reviewer QA 终局核验 → packer 可选打包。唯一必填输入是 requirement：resourcesRoot、need_driver、pack 等实现细节由
+  designer 经 ask.questions 向用户提问，用户在发起会话作答后引擎把答复编回该节点重跑并落入 facts，下游节点一律
+  引用 nodes.designer.facts.*。宿主无 ask 通道或 ask 轮次用尽时回退 report-ask 报告输出。cmodel-orchestrator 不入图：
+  派发与审阅汇总由本图的拓扑承担。
+entry: start
+nodes:
+  - id: start
+    kind: input
+    params:
+      - { name: requirement, required: true }
+
+  - id: designer
+    kind: agent
+    agent: cmodel-designer
+    task: |
+      为目标芯粒的 SystemC CModel 开发产出设计文档（只读检查，不写生成文件）。
+      目标芯粒与需求：{{input.requirement}}。
+      工程根目录即本工作目录，只读检查 inc/、src/、json_config/、CMakeLists.txt 与已有依赖。
+      resourcesRoot、need_driver、pack、芯粒名等实现细节无法从需求与工程推断时，按你的 ask 提问规范经 ask.questions 向用户提问；
+      任务尾部出现「用户已答复上一轮 ask 的提问」块时逐题采用答复填入 facts 并输出 status: "done"，不要重复提问。
+    context: { from: memory }
+
+  - id: ask-router
+    kind: router
+    branches:
+      - when: '{"or": [{"==": [{"var": "nodes.designer.status"}, "ask"]}, {"==": [{"var": "nodes.designer.status"}, "blocked"]}]}'
+        to: report-ask
+    else: fix-loop
+
+  - id: fix-loop
+    kind: loop
+    body: implementer
+    until:
+      expr: '{"==": [{"var": "nodes.builder.status"}, "done"]}'
+    maxIters: 3
+    onMaxIters: stop
+    carry: [builder-feedback]
+    emit: [builder-feedback]
+
+  - id: implementer
+    kind: agent
+    agent: cmodel-implementer
+    task: |
+      按【设计文档】把 CModel 生成文件写入 demo/ 子目录（与脚手架落位一致）。
+      resourcesRoot：{{nodes.designer.facts.resourcesRoot}}（含 templates/ 与 demo/ 的 skill 目录绝对路径；缺失即 status: "blocked"）。
+      目标芯粒：{{nodes.designer.facts.chiplet}}（替换模板占位符用）；目标芯粒与需求：{{input.requirement}}。
+      need_driver 采用「{{nodes.designer.facts.need_driver}}」，不要输出 ask；功耗公式无法推断时在 result 中列为待确认项并采用合理默认，不要输出 ask；不引入新依赖。
+    context: { lastMessages: 1 }
+
+  - id: builder
+    kind: agent
+    agent: cmodel-builder
+    task: |
+      构建并运行 demo/ 工程：清理重建 demo/build/，探测 SystemC，cmake -DCMAKE_BUILD_TYPE=Release 配置后 cmake --build --parallel，运行 RISCV_TLM 检查 stdout 与退出码；可自动修正的编译错误修正后重建。
+      resourcesRoot：{{nodes.designer.facts.resourcesRoot}}（缺失即 status: "blocked"）。
+      目标芯粒与需求：{{input.requirement}}。
+      实现产物清单见入边载荷；确认文件就位后再构建，缺文件时 status: "blocked" 附缺失清单。
+    context: { lastMessages: 1 }
+
+  - id: build-router
+    kind: router
+    branches:
+      - when: '{"==": [{"var": "nodes.builder.status"}, "done"]}'
+        to: reviewer
+    else: report-fail
+
+  - id: reviewer
+    kind: agent
+    agent: cmodel-reviewer
+    task: |
+      终局核验工作目录 demo/ 下生成的 CModel 工程：逐项核对 QA 清单与冲突处理规则，严格按 outputSchema 返回 pass 与 violations。
+      目标芯粒与需求：{{input.requirement}}
+      resourcesRoot：{{nodes.designer.facts.resourcesRoot}}
+
+  - id: verdict-router
+    kind: router
+    branches:
+      - when: '{"==": [{"var": "nodes.reviewer.pass"}, true]}'
+        to: pack-router
+    else: report-fail
+
+  - id: pack-router
+    kind: router
+    branches:
+      - when: '{"==": [{"var": "nodes.designer.facts.pack"}, "yes"]}'
+        to: packer
+    else: done
+
+  - id: packer
+    kind: agent
+    agent: cmodel-packer
+    task: |
+      打包 demo/ 产物为 pack/<CHIPLET_NAME>/ 分发目录。
+      resourcesRoot：{{nodes.designer.facts.resourcesRoot}}
+      芯粒名：{{nodes.designer.facts.chiplet}}（为空时从 demo/json_config/ 与 demo/inc/ 现有文件名推断）。
+      need_driver：{{nodes.designer.facts.need_driver}}（为 "FALSE" 时不拷贝 CSV）。
+
+  - id: done
+    kind: output
+    value: |
+      # CModel 芯片流水线完成
+      ## 实现细节（用户确认后的事实）
+      resourcesRoot：{{nodes.designer.facts.resourcesRoot}}
+      芯粒名：{{nodes.designer.facts.chiplet}}
+      need_driver：{{nodes.designer.facts.need_driver}}
+      pack：{{nodes.designer.facts.pack}}
+      ## 设计文档
+      {{nodes.designer.result}}
+      ## 生成文件清单
+      {{nodes.implementer.result}}
+      ## 构建/运行报告
+      {{nodes.builder.result}}
+      ## 评审结论
+      pass={{nodes.reviewer.pass}}
+      {{nodes.reviewer.violations}}
+      ## 打包清单（pack 非 yes 时为空）
+      {{nodes.packer}}
+
+  - id: report-ask
+    kind: output
+    value: |
+      # CModel 流水线暂停：需要用户确认
+      设计阶段经多轮 ask 仍未获得可用答复（或本宿主未提供 ask 通道），已停止后续派发。
+      {{nodes.designer}}
+      请补充信息后重新运行本工作流。
+
+  - id: report-fail
+    kind: output
+    value: |
+      # CModel 芯片流水线未通过
+      ## 构建/运行报告
+      {{nodes.builder}}
+      ## 评审 violations
+      {{nodes.reviewer.violations}}
+      ## 最近一轮实现与构建反馈
+      {{nodes.fix-loop}}
+      请查看 journal 与 demo/ 定位失败原因，修正后重新运行本工作流。
+
+edges:
+  - { id: start-to-designer, from: start, to: designer, kind: flow }
+  - { id: designer-to-ask-router, from: designer, to: ask-router, kind: flow }
+  - id: ask-to-report
+    from: ask-router
+    to: report-ask
+    kind: branch
+    condition: '{"or": [{"==": [{"var": "nodes.designer.status"}, "ask"]}, {"==": [{"var": "nodes.designer.status"}, "blocked"]}]}'
+  - id: ask-router-to-loop
+    from: ask-router
+    to: fix-loop
+    kind: branch
+    template: |
+      【设计文档】
+      {{nodes.designer.result}}
+  - { id: loop-to-implementer, from: fix-loop, to: implementer, kind: flow }
+  - { id: implementer-to-builder, from: implementer, to: builder, kind: flow }
+  - id: builder-feedback
+    from: builder
+    to: fix-loop
+    kind: loop-back
+    template: |
+      本轮构建/运行报告。
+      {{nodes.builder}}
+  - { id: loop-to-build-router, from: fix-loop, to: build-router, kind: flow }
+  - id: build-to-reviewer
+    from: build-router
+    to: reviewer
+    kind: branch
+    condition: '{"==": [{"var": "nodes.builder.status"}, "done"]}'
+  - { id: build-router-to-fail, from: build-router, to: report-fail, kind: branch }
+  - { id: reviewer-to-verdict-router, from: reviewer, to: verdict-router, kind: flow }
+  - id: verdict-pass
+    from: verdict-router
+    to: pack-router
+    kind: branch
+    condition: '{"==": [{"var": "nodes.reviewer.pass"}, true]}'
+  - { id: verdict-router-to-fail, from: verdict-router, to: report-fail, kind: branch }
+  - id: pack-to-packer
+    from: pack-router
+    to: packer
+    kind: branch
+    condition: '{"==": [{"var": "nodes.designer.facts.pack"}, "yes"]}'
+  - { id: pack-router-to-done, from: pack-router, to: done, kind: branch }
+  - { id: packer-to-done, from: packer, to: done, kind: flow }
+outputs:
+  report: "{{nodes.done}}"
+  build: "{{nodes.fix-loop}}"
+  review: "{{nodes.reviewer}}"
